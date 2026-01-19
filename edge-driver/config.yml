@@ -1,0 +1,5 @@
+name: 'TV App Launcher'
+packageKey: 'tv-app-launcher-v2'
+permissions:
+  lan: {}
+  discovery: {}
