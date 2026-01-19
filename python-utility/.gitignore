@@ -1,3 +1,11 @@
+# Environment variables
+.env
+.env.local
+
+# Cache and runtime files with sensitive data
+devices.json
+*.cache
+
 # Python
 __pycache__/
 *.py[cod]
