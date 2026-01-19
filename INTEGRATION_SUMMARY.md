@@ -39,11 +39,11 @@ The Python utility now implements the same OAuth flow as your TV app:
 
 #### 3. **Credentials Extracted**
 All your credentials have been automatically extracted and configured:
-- **PAT Token**: `bf3c33ec-be26-4867-ace6-27e19370728a`
-- **TV Device ID**: `1d5476d7-3fb3-3e5b-fa91-a1c0cfc05aa7`
+- **PAT Token**: `<YOUR_PAT_TOKEN>`
+- **TV Device ID**: `<YOUR_TV_DEVICE_ID>`
 - **TV App ID**: `tvweather1.tvweather`
-- **OAuth Client ID**: `2fc15490-2e53-40d6-a4f3-b4ef5782acc3`
-- **OAuth Client Secret**: `35dfab34-988f-4794-b369-d912adc90b5f`
+- **OAuth Client ID**: `<YOUR_CLIENT_ID>`
+- **OAuth Client Secret**: `<YOUR_CLIENT_SECRET>`
 
 ## 📁 Project Structure
 
@@ -78,7 +78,7 @@ edge-driver-http-request/
 ### Current Configuration
 
 The Python utility is configured with **PAT authentication** for immediate testing:
-- Uses: `SMARTTHINGS_PAT=bf3c33ec-be26-4867-ace6-27e19370728a`
+- Uses: `SMARTTHINGS_PAT=<YOUR_PAT_TOKEN>`
 - OAuth credentials are set but not active yet
 - To enable OAuth: Change `use_oauth=False` to `use_oauth=True` in app.py line 152
 

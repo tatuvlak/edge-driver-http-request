@@ -33,12 +33,12 @@ cat /share/Container/tv-app-launcher/.env
 
 Should show:
 ```env
-SMARTTHINGS_PAT=71629d58-6900-4df1-b2b4-39525b4940ee
-TV_DEVICE_ID_S95=86cde607-414a-a9aa-25fe-71fbeeb2c9f8
-TV_DEVICE_ID_M7=1d5476d7-3fb3-3e5b-fa91-a1c0cfc05aa7
+SMARTTHINGS_PAT=<YOUR_PAT_TOKEN>
+TV_DEVICE_ID_S95=<YOUR_S95_DEVICE_ID>
+TV_DEVICE_ID_M7=<YOUR_M7_DEVICE_ID>
 TV_APP_ID=tvweather1.tvweather
-ST_CLIENT_ID=2fc15490-2e53-40d6-a4f3-b4ef5782acc3
-ST_CLIENT_SECRET=35dfab34-988f-4794-b369-d912adc90b5f
+ST_CLIENT_ID=<YOUR_CLIENT_ID>
+ST_CLIENT_SECRET=<YOUR_CLIENT_SECRET>
 ST_REFRESH_TOKEN=
 HOST=0.0.0.0
 PORT=5000
@@ -82,12 +82,12 @@ Click **Add** for each variable from your `.env` file:
 
 | Variable Name | Value |
 |---------------|-------|
-| SMARTTHINGS_PAT | `71629d58-6900-4df1-b2b4-39525b4940ee` |
-| TV_DEVICE_ID_S95 | `86cde607-414a-a9aa-25fe-71fbeeb2c9f8` |
-| TV_DEVICE_ID_M7 | `1d5476d7-3fb3-3e5b-fa91-a1c0cfc05aa7` |
+| SMARTTHINGS_PAT | `<YOUR_PAT_TOKEN>` |
+| TV_DEVICE_ID_S95 | `<YOUR_S95_DEVICE_ID>` |
+| TV_DEVICE_ID_M7 | `<YOUR_M7_DEVICE_ID>` |
 | TV_APP_ID | `tvweather1.tvweather` |
-| ST_CLIENT_ID | `2fc15490-2e53-40d6-a4f3-b4ef5782acc3` |
-| ST_CLIENT_SECRET | `35dfab34-988f-4794-b369-d912adc90b5f` |
+| ST_CLIENT_ID | `<YOUR_CLIENT_ID>` |
+| ST_CLIENT_SECRET | `<YOUR_CLIENT_SECRET>` |
 | ST_REFRESH_TOKEN | (leave empty) |
 | HOST | `0.0.0.0` |
 | PORT | `5000` |

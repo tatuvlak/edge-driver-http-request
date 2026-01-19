@@ -8,7 +8,7 @@ Use this checklist to ensure everything is deployed correctly.
 - [ ] SmartThings CLI installed (`npm install -g @smartthings/cli`)
 - [ ] QNAP Container Station installed
 - [ ] SSH enabled on QNAP (optional)
-- [ ] Fresh PAT token obtained: `71629d58-6900-4df1-b2b4-39525b4940ee`
+- [ ] Fresh PAT token obtained: `<YOUR_PAT_TOKEN>`
 
 ## Part 1: Deploy Python Utility to QNAP
 
