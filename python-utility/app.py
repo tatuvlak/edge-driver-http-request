@@ -38,8 +38,10 @@ class Config:
     # OAuth token storage
     TOKEN_FILE = os.environ.get('TOKEN_FILE', '/app/data/oauth_tokens.json')
     
-    # OAuth server configuration (for initial authorization flow)
-    OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'http://localhost:5000/oauth/callback')
+    # OAuth callback configuration
+    # Use external callback page (GitHub Pages) since this service runs on local NAS
+    OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'https://tatuvlak.github.io/tv-weather-oauth/callback.html')
+    # Note: Authorization code from external callback must be manually entered via /oauth/token endpoint
     
     # TV/Monitor configuration
     # S95 TV (default)
@@ -305,7 +307,7 @@ def health_check():
 
 @app.route('/oauth/authorize', methods=['GET'])
 def oauth_authorize():
-    """Start OAuth authorization flow"""
+    """Get OAuth authorization URL (manual flow for local NAS deployment)"""
     if not config.ST_CLIENT_ID:
         return jsonify({
             'success': False,
@@ -322,53 +324,68 @@ def oauth_authorize():
     }
     
     # Create query string
-    query = '&'.join([f"{k}={v}" for k, v in params.items()])
+    from urllib.parse import urlencode
+    query = urlencode(params)
     full_url = f"{auth_url}?{query}"
     
-    logger.info(f"Redirecting to OAuth authorization URL")
-    return redirect(full_url)
+    logger.info(f"Authorization URL requested")
+    
+    # Return JSON with instructions for manual OAuth flow
+    return jsonify({
+        'success': True,
+        'authorization_url': full_url,
+        'instructions': [
+            '1. Open the authorization_url in your browser',
+            '2. Log in with your SmartThings account and authorize',
+            '3. You will be redirected to the callback page with the code',
+            '4. Copy the authorization code from the callback page',
+            '5. POST the code to /oauth/token endpoint: {"code": "your-code"}'
+        ],
+        'callback_url': config.OAUTH_REDIRECT_URI,
+        'token_endpoint': '/oauth/token'
+    })
 
-@app.route('/oauth/callback', methods=['GET'])
-def oauth_callback():
-    """OAuth callback endpoint"""
-    code = request.args.get('code')
-    error = request.args.get('error')
-    
-    if error:
-        logger.error(f"OAuth error: {error}")
-        return jsonify({
-            'success': False,
-            'error': error
-        }), 400
-    
-    if not code:
-        return jsonify({
-            'success': False,
-            'error': 'No authorization code received'
-        }), 400
-    
-    # Exchange code for tokens
-    token_url = "https://api.smartthings.com/oauth/token"
-    data = {
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': config.OAUTH_REDIRECT_URI
-    }
-    
-    headers = {
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    
-    auth = None
-    if config.ST_CLIENT_SECRET:
-        auth = (config.ST_CLIENT_ID, config.ST_CLIENT_SECRET)
-    else:
-        data['client_id'] = config.ST_CLIENT_ID
-    
+@app.route('/oauth/token', methods=['POST'])
+def oauth_token_exchange():
+    """Exchange authorization code for tokens (manual flow)"""
     try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'Request body must be JSON'
+            }), 400
+        
+        code = data.get('code')
+        if not code:
+            return jsonify({
+                'success': False,
+                'error': 'Authorization code is required in request body: {"code": "your-code"}'
+            }), 400
+        
+        logger.info("Exchanging authorization code for tokens...")
+        
+        # Exchange code for tokens
+        token_url = "https://api.smartthings.com/oauth/token"
+        token_data = {
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': config.OAUTH_REDIRECT_URI
+        }
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        
+        auth = None
+        if config.ST_CLIENT_SECRET:
+            auth = (config.ST_CLIENT_ID, config.ST_CLIENT_SECRET)
+        else:
+            token_data['client_id'] = config.ST_CLIENT_ID
+        
         response = requests.post(
             token_url,
-            data=data,
+            data=token_data,
             headers=headers,
             auth=auth,
             timeout=10
@@ -382,24 +399,28 @@ def oauth_callback():
                 'error': f'Token exchange failed: {response.text}'
             }), 400
         
-        token_data = response.json()
+        token_response = response.json()
         
         # Update API client with new tokens
-        st_api.access_token = token_data.get('access_token')
-        st_api.refresh_token = token_data.get('refresh_token')
+        st_api.access_token = token_response.get('access_token')
+        st_api.refresh_token = token_response.get('refresh_token')
         
-        expires_in = token_data.get('expires_in', 86400)
+        expires_in = token_response.get('expires_in', 86400)
         st_api.token_expires_at = datetime.now().timestamp() + expires_in
+        
+        # Enable OAuth mode now that we have tokens
+        st_api.use_oauth = True
         
         # Save tokens
         st_api._save_tokens()
         
-        logger.info("OAuth authorization successful!")
+        logger.info("OAuth authorization successful! Tokens saved.")
         
         return jsonify({
             'success': True,
             'message': 'OAuth authorization successful! Tokens saved.',
-            'expires_in': expires_in
+            'expires_in': expires_in,
+            'expires_at': datetime.fromtimestamp(st_api.token_expires_at).isoformat()
         })
         
     except Exception as e:

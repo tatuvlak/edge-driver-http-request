@@ -15,7 +15,8 @@ services:
       - ST_CLIENT_ID=${ST_CLIENT_ID}
       - ST_CLIENT_SECRET=${ST_CLIENT_SECRET}
       - ST_REFRESH_TOKEN=${ST_REFRESH_TOKEN}
-      - OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI:-http://localhost:5000/oauth/callback}
+      # External callback URL (GitHub Pages) - service runs on local NAS
+      - OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI:-https://tatuvlak.github.io/tv-weather-oauth/callback.html}
       - TOKEN_FILE=${TOKEN_FILE:-/app/data/oauth_tokens.json}
       # PAT fallback (deprecated)
       - SMARTTHINGS_PAT=${SMARTTHINGS_PAT}

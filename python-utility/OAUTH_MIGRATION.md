@@ -4,6 +4,8 @@
 
 This version of the python-utility has been updated to use **OAuth authentication** instead of Personal Access Tokens (PAT). OAuth provides better security and allows for automatic token refresh.
 
+**Important for Local NAS Deployment**: Since this service runs on a local NAS (not internet-accessible), it uses an **external OAuth callback** hosted on GitHub Pages (from the tv-weather-oauth project). This is the same callback mechanism used by the Samsung TV Weather App.
+
 ## What Changed
 
 ### Version 1.x (PAT-based)
@@ -15,6 +17,8 @@ This version of the python-utility has been updated to use **OAuth authenticatio
 - Uses OAuth 2.0 flow with refresh tokens
 - Automatic token refresh before expiration
 - Persistent token storage across restarts
+- **Manual authorization flow** (suitable for local NAS)
+- External callback via GitHub Pages
 - Falls back to PAT if OAuth is not configured
 - New endpoints for OAuth authorization
 
@@ -33,7 +37,8 @@ If you already have a SmartThings OAuth refresh token:
    
    # Optional - customize token storage location
    TOKEN_FILE=/app/data/oauth_tokens.json
-   OAUTH_REDIRECT_URI=http://your-server:5000/oauth/callback
+   # External OAuth callback (GitHub Pages) - DO NOT change unless you host your own
+   OAUTH_REDIRECT_URI=https://tatuvlak.github.io/tv-weather-oauth/callback.html
    SECRET_KEY=your-secret-key-for-flask-sessions
    
    # Your existing device configuration
@@ -67,15 +72,16 @@ If you need to obtain a new OAuth refresh token:
 
 1. **Configure SmartThings Developer Workspace**:
    - Go to https://smartthings.developer.samsung.com/
-   - Register your application
-   - Add OAuth redirect URI: `http://your-server:5000/oauth/callback`
+   - Register your application (or use existing OAuth client)
+   - Add OAuth redirect URI: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`
+     - **Important**: Use the external GitHub Pages URL (same as TV Weather app)
    - Note your Client ID and Client Secret
 
 2. **Set minimum environment variables**:
    ```env
    ST_CLIENT_ID=your-client-id
    ST_CLIENT_SECRET=your-client-secret
-   OAUTH_REDIRECT_URI=http://your-server:5000/oauth/callback
+   OAUTH_REDIRECT_URI=https://tatuvlak.github.io/tv-weather-oauth/callback.html
    SECRET_KEY=your-secret-key
    ```
 
@@ -84,11 +90,25 @@ If you need to obtain a new OAuth refresh token:
    docker-compose up --build -d
    ```
 
-4. **Initiate OAuth flow**:
-   - Visit: `http://your-server:5000/oauth/authorize`
-   - Log in with your SmartThings account
-   - Grant permissions
-   - You'll be redirected back with success message
+4. **Initiate OAuth flow** (manual process for local NAS):
+   
+   a. Get authorization URL:
+   ```bash
+   curl http://your-nas-ip:5000/oauth/authorize
+   ```
+   
+   b. Copy the `authorization_url` from the response and open it in your browser
+   
+   c. Log in with your SmartThings account and grant permissions
+   
+   d. You'll be redirected to the callback page (GitHub Pages) showing your authorization code
+   
+   e. Copy the code and submit it to your service:
+   ```bash
+   curl -X POST http://your-nas-ip:5000/oauth/token \
+     -H "Content-Type: application/json" \
+     -d '{"code": "paste-your-code-here"}'
+   ```
 
 5. **Verify tokens are saved**:
    ```bash
@@ -96,7 +116,7 @@ If you need to obtain a new OAuth refresh token:
    docker exec tv-app-launcher ls -la /app/data/
    
    # Verify configuration
-   curl http://localhost:5000/config
+   curl http://your-nas-ip:5000/config
    ```
 
 ### Option 3: Continue Using PAT (Not Recommended)

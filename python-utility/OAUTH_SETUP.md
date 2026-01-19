@@ -1,12 +1,15 @@
-# Quick Start: OAuth Setup
+# Quick Start: OAuth Setup (Local NAS Deployment)
 
-This guide will help you set up OAuth authentication for the TV App Launcher utility.
+This guide will help you set up OAuth authentication for the TV App Launcher utility running on a local NAS.
+
+**Important**: Since this service runs on a local NAS (not accessible from the internet), we use an external OAuth callback page hosted on GitHub Pages (from the tv-weather-oauth project).
 
 ## Prerequisites
 
-- Docker and Docker Compose installed
+- Docker and Docker Compose installed on your NAS
 - SmartThings Developer account
 - Access to your SmartThings devices
+- GitHub Pages callback URL (already set up at: https://tatuvlak.github.io/tv-weather-oauth/callback.html)
 
 ## Step 1: Register OAuth Application
 
@@ -15,9 +18,9 @@ This guide will help you set up OAuth authentication for the TV App Launcher uti
 3. Navigate to **Workspace** → **OAuth Clients** → **Create New OAuth Client**
 4. Fill in the details:
    - **Name**: TV App Launcher
-   - **Redirect URI**: `http://your-server-ip:5000/oauth/callback`
-     - For local testing: `http://localhost:5000/oauth/callback`
-     - For QNAP/production: `http://your-qnap-ip:5000/oauth/callback`
+   - **Redirect URI**: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`
+     - ⚠️ **Important**: Use the external GitHub Pages URL, NOT your local NAS URL
+     - This is the same callback used for your Samsung TV Weather app
    - **Scopes**: 
      - `r:devices:*` (Read devices)
      - `x:devices:*` (Execute device commands)
@@ -34,8 +37,8 @@ Create or update `/share/Container/tv-app-launcher/.env`:
 ST_CLIENT_ID=your-client-id-from-step-1
 ST_CLIENT_SECRET=your-client-secret-from-step-1
 
-# OAuth Settings (adjust the IP to match your setup)
-OAUTH_REDIRECT_URI=http://your-server-ip:5000/oauth/callback
+# OAuth Callback (External GitHub Pages - DO NOT CHANGE unless you host your own)
+OAUTH_REDIRECT_URI=https://tatuvlak.github.io/tv-weather-oauth/callback.html
 TOKEN_FILE=/app/data/oauth_tokens.json
 SECRET_KEY=generate-random-string-here
 
@@ -45,7 +48,7 @@ TV_DEVICE_ID_M7=your-m7-monitor-device-id
 TV_APP_ID=your-weather-app-id
 ```
 
-**Note**: Don't set `ST_REFRESH_TOKEN` yet - we'll get it in the next step.
+**Note**: Don't set `ST_REFRESH_TOKEN` yet - we'll get it in the authorization flow.
 
 ## Step 3: Deploy the Container
 
@@ -63,40 +66,72 @@ docker-compose up --build -d
 docker logs -f tv-app-launcher
 ```
 
-## Step 4: Obtain OAuth Tokens
+## Step 4: Obtain OAuth Tokens (Manual Flow)
 
-### Method A: Browser Authorization (Recommended)
+Since your NAS is not accessible from the internet, we use a **manual OAuth flow** with an external callback page.
 
-1. **Open authorization URL** in your browser:
+### Authorization Process
+
+1. **Get the authorization URL** from your NAS:
+   ```bash
+   curl http://your-nas-ip:5000/oauth/authorize
    ```
-   http://your-server-ip:5000/oauth/authorize
+   
+   This will return a JSON response:
+   ```json
+   {
+     "success": true,
+     "authorization_url": "https://api.smartthings.com/oauth/authorize?...",
+     "instructions": [
+       "1. Open the authorization_url in your browser",
+       "2. Log in with your SmartThings account and authorize",
+       "3. You will be redirected to the callback page with the code",
+       "4. Copy the authorization code from the callback page",
+       "5. POST the code to /oauth/token endpoint: {\"code\": \"your-code\"}"
+     ],
+     "callback_url": "https://tatuvlak.github.io/tv-weather-oauth/callback.html",
+     "token_endpoint": "/oauth/token"
+   }
    ```
 
-2. **Log in** with your SmartThings account
+2. **Open the authorization URL** in your browser (copy the `authorization_url` from above)
 
-3. **Grant permissions** when prompted
+3. **Log in** with your SmartThings account and **grant permissions**
 
-4. **You'll be redirected** to the callback URL with a success message:
+4. **You'll be redirected** to the GitHub Pages callback:
+   - URL: `https://tatuvlak.github.io/tv-weather-oauth/callback.html?code=...`
+   - The page will display your authorization code in a large box
+   - Click "Copy Code" to copy it to your clipboard
+
+5. **Submit the code** to your NAS service:
+   ```bash
+   curl -X POST http://your-nas-ip:5000/oauth/token \
+     -H "Content-Type: application/json" \
+     -d '{"code": "paste-your-code-here"}'
+   ```
+   
+   Expected response:
    ```json
    {
      "success": true,
      "message": "OAuth authorization successful! Tokens saved.",
-     "expires_in": 86400
+     "expires_in": 86400,
+     "expires_at": "2026-01-20T..."
    }
    ```
 
-5. **Verify tokens are saved**:
+6. **Verify tokens are saved**:
    ```bash
    # Check token file exists
    docker exec tv-app-launcher cat /app/data/oauth_tokens.json
    
    # Verify configuration
-   curl http://your-server-ip:5000/config
+   curl http://your-nas-ip:5000/config
    ```
 
-### Method B: Manual Token Entry (If you already have a refresh token)
+### Alternative: Use Existing Refresh Token
 
-If you already have a refresh token from previous setup:
+If you already have a refresh token from a previous setup:
 
 1. **Add to .env file**:
    ```env
@@ -110,7 +145,7 @@ If you already have a refresh token from previous setup:
 
 3. **Verify**:
    ```bash
-   curl http://your-server-ip:5000/config
+   curl http://your-nas-ip:5000/config
    ```
 
 ## Step 5: Test the Setup
@@ -171,12 +206,12 @@ Expected response:
 2. If missing, run OAuth authorization flow (Step 4)
 
 ### Issue: Redirect URI mismatch
-**Error**: `redirect_uri_mismatch` in OAuth callback
+**Error**: `redirect_uri_mismatch` in OAuth callback page
 
 **Solution**: 
 1. Check your OAuth client settings in SmartThings Developer Workspace
-2. Ensure the redirect URI matches exactly: `http://your-server-ip:5000/oauth/callback`
-3. Update `.env` file: `OAUTH_REDIRECT_URI=http://your-server-ip:5000/oauth/callback`
+2. Ensure the redirect URI is exactly: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`
+3. Make sure `.env` has: `OAUTH_REDIRECT_URI=https://tatuvlak.github.io/tv-weather-oauth/callback.html`
 4. Restart container
 
 ### Issue: 401 Unauthorized

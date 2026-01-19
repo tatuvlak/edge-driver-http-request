@@ -44,6 +44,7 @@ A Flask-based HTTP service that receives requests from SmartThings Edge Driver a
 - Docker and Docker Compose
 - SmartThings Developer account
 - SmartThings devices (Samsung TV/Monitor)
+- **Note**: Service runs on local NAS - uses external OAuth callback (GitHub Pages)
 
 ### 2. Setup OAuth
 
@@ -51,10 +52,13 @@ Follow the [OAuth Setup Guide](./OAUTH_SETUP.md) for detailed instructions.
 
 **Quick version:**
 1. Register OAuth app at https://smartthings.developer.samsung.com/
+   - Set redirect URI to: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`
 2. Configure `.env` with your credentials
 3. Run `docker-compose up --build -d`
-4. Visit `http://your-server:5000/oauth/authorize`
-5. Done! Tokens are auto-managed
+4. Get authorization URL: `curl http://your-nas:5000/oauth/authorize`
+5. Open URL in browser, authorize, and copy the code from callback page
+6. Submit code: `curl -X POST http://your-nas:5000/oauth/token -H "Content-Type: application/json" -d '{"code":"your-code"}'`
+7. Done! Tokens are auto-managed
 
 ### 3. Configuration
 
@@ -64,7 +68,8 @@ Create `.env` file (see [.env.example](./.env.example)):
 # OAuth Configuration
 ST_CLIENT_ID=your-client-id
 ST_CLIENT_SECRET=your-client-secret
-OAUTH_REDIRECT_URI=http://your-server:5000/oauth/callback
+# External callback (GitHub Pages) - required for local NAS deployment
+OAUTH_REDIRECT_URI=https://tatuvlak.github.io/tv-weather-oauth/callback.html
 SECRET_KEY=your-random-secret-key
 
 # Device Configuration
@@ -131,10 +136,49 @@ Health check endpoint.
 ```
 
 ### GET `/oauth/authorize`
-Initiates OAuth authorization flow. Opens SmartThings login page.
+Get the OAuth authorization URL for manual authorization flow.
 
-### GET `/oauth/callback`
-OAuth callback endpoint (called automatically by SmartThings).
+**Usage (for local NAS deployment):**
+```bash
+curl http://your-nas:5000/oauth/authorize
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "authorization_url": "https://api.smartthings.com/oauth/authorize?...",
+  "instructions": [
+    "1. Open the authorization_url in your browser",
+    "2. Log in with your SmartThings account and authorize",
+    "3. You will be redirected to the callback page with the code",
+    "4. Copy the authorization code from the callback page",
+    "5. POST the code to /oauth/token endpoint"
+  ],
+  "callback_url": "https://tatuvlak.github.io/tv-weather-oauth/callback.html",
+  "token_endpoint": "/oauth/token"
+}
+```
+
+### POST `/oauth/token`
+Exchange authorization code for access/refresh tokens (manual flow).
+
+**Request:**
+```bash
+curl -X POST http://your-nas:5000/oauth/token \
+  -H "Content-Type: application/json" \
+  -d '{"code": "authorization-code-from-callback"}'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "OAuth authorization successful! Tokens saved.",
+  "expires_in": 86400,
+  "expires_at": "2026-01-20T15:30:00"
+}
+```
 
 ### GET `/device-status?target=s95`
 Get device status from SmartThings API.
@@ -147,11 +191,11 @@ Get device status from SmartThings API.
 | `ST_CLIENT_ID` | Yes | SmartThings OAuth client ID |
 | `ST_CLIENT_SECRET` | Recommended | OAuth client secret |
 | `ST_REFRESH_TOKEN` | Optional* | Initial refresh token |
-| `OAUTH_REDIRECT_URI` | Yes | OAuth callback URL |
+| `OAUTH_REDIRECT_URI` | Yes | External callback URL (default: GitHub Pages) |
 | `TOKEN_FILE` | No | Token storage path (default: `/app/data/oauth_tokens.json`) |
 | `SECRET_KEY` | Yes | Flask session secret |
 
-*Can be obtained through authorization flow
+*Can be obtained through manual authorization flow
 
 ### Device Configuration
 | Variable | Required | Description |
@@ -176,10 +220,15 @@ Get device status from SmartThings API.
 ### Manual Operations
 ```bash
 # View token status
-curl http://your-server:5000/config
+curl http://your-nas:5000/config
 
-# Force new authorization (revokes old tokens)
-# Visit: http://your-server:5000/oauth/authorize
+# Get authorization URL for new authorization
+curl http://your-nas:5000/oauth/authorize
+
+# Exchange code for tokens (after authorizing in browser)
+curl -X POST http://your-nas:5000/oauth/token \
+  -H "Content-Type: application/json" \
+  -d '{"code": "your-authorization-code"}'
 
 # View token file
 docker exec tv-app-launcher cat /app/data/oauth_tokens.json
@@ -228,8 +277,10 @@ chmod 755 /share/Container/tv-app-launcher/data
 
 ### "No authentication token available"
 1. Check OAuth credentials in `.env`
-2. Run authorization flow: `http://your-server:5000/oauth/authorize`
-3. Check token file exists: `docker exec tv-app-launcher ls -la /app/data/`
+2. Get authorization URL: `curl http://your-nas:5000/oauth/authorize`
+3. Open the URL in browser, authorize, and copy the code
+4. Submit code: `curl -X POST http://your-nas:5000/oauth/token -H "Content-Type: application/json" -d '{"code":"your-code"}'`
+5. Check token file exists: `docker exec tv-app-launcher ls -la /app/data/`
 
 ### "Token refresh failed"
 1. Check logs: `docker logs tv-app-launcher`
@@ -243,8 +294,8 @@ chmod 755 /share/Container/tv-app-launcher/data
 
 ### Redirect URI mismatch
 1. Verify redirect URI in SmartThings Developer Workspace
-2. Must exactly match `OAUTH_REDIRECT_URI` in `.env`
-3. Check for http vs https, trailing slashes, port numbers
+2. Must be: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`
+3. Check `.env` has correct `OAUTH_REDIRECT_URI`
 
 ## Development
 
