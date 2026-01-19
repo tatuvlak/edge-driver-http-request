@@ -3,12 +3,14 @@ TV App Launcher Utility
 Receives HTTP requests from SmartThings Edge Driver and launches TV app via SmartThings API
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, session
 import requests
 import os
+import json
 import logging
 from datetime import datetime
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
@@ -26,12 +28,18 @@ app = Flask(__name__)
 class Config:
     # SmartThings API configuration
     ST_API_BASE_URL = "https://api.smartthings.com/v1"
-    ST_PAT = os.environ.get('SMARTTHINGS_PAT', '')  # Personal Access Token
+    ST_PAT = os.environ.get('SMARTTHINGS_PAT', '')  # Personal Access Token (fallback only)
     
-    # OAuth configuration (for future use)
+    # OAuth configuration
     ST_CLIENT_ID = os.environ.get('ST_CLIENT_ID', '')
     ST_CLIENT_SECRET = os.environ.get('ST_CLIENT_SECRET', '')
     ST_REFRESH_TOKEN = os.environ.get('ST_REFRESH_TOKEN', '')
+    
+    # OAuth token storage
+    TOKEN_FILE = os.environ.get('TOKEN_FILE', '/app/data/oauth_tokens.json')
+    
+    # OAuth server configuration (for initial authorization flow)
+    OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'http://localhost:5000/oauth/callback')
     
     # TV/Monitor configuration
     # S95 TV (default)
@@ -44,23 +52,77 @@ class Config:
     # Server configuration
     PORT = int(os.environ.get('PORT', 5000))
     HOST = os.environ.get('HOST', '0.0.0.0')
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
 config = Config()
 
 class SmartThingsAPI:
-    """SmartThings API client"""
+    """SmartThings API client with OAuth support"""
     
-    def __init__(self, use_oauth=False):
+    def __init__(self, use_oauth=True):
         self.use_oauth = use_oauth
         self.access_token = None
+        self.refresh_token = None
         self.token_expires_at = None
         
+        # Load tokens from file if they exist
+        if use_oauth:
+            self._load_tokens()
+            # If we have a refresh token but no valid access token, refresh immediately
+            if self.refresh_token and (not self.access_token or self.is_token_expired()):
+                logger.info("Initial token refresh on startup")
+                self.refresh_oauth_token()
+    
+    def _load_tokens(self):
+        """Load OAuth tokens from file"""
+        try:
+            token_file = Path(config.TOKEN_FILE)
+            if token_file.exists():
+                with open(token_file, 'r') as f:
+                    data = json.load(f)
+                    self.access_token = data.get('access_token')
+                    self.refresh_token = data.get('refresh_token')
+                    self.token_expires_at = data.get('expires_at')
+                    logger.info("OAuth tokens loaded from file")
+            else:
+                # Try to use refresh token from environment if file doesn't exist
+                if config.ST_REFRESH_TOKEN:
+                    self.refresh_token = config.ST_REFRESH_TOKEN
+                    logger.info("Using refresh token from environment")
+        except Exception as e:
+            logger.error(f"Failed to load tokens from file: {e}")
+    
+    def _save_tokens(self):
+        """Save OAuth tokens to file"""
+        try:
+            token_file = Path(config.TOKEN_FILE)
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            data = {
+                'access_token': self.access_token,
+                'refresh_token': self.refresh_token,
+                'expires_at': self.token_expires_at,
+                'updated_at': datetime.now().isoformat()
+            }
+            
+            with open(token_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.info("OAuth tokens saved to file")
+        except Exception as e:
+            logger.error(f"Failed to save tokens to file: {e}")
+    
     def get_headers(self):
         """Get API request headers"""
-        if self.use_oauth and self.access_token:
+        if self.use_oauth:
+            if not self.access_token or self.is_token_expired():
+                logger.info("Token missing or expired, refreshing...")
+                self.refresh_oauth_token()
             token = self.access_token
         else:
             token = config.ST_PAT
+            
+        if not token:
+            raise ValueError("No authentication token available")
             
         return {
             'Authorization': f'Bearer {token}',
@@ -77,8 +139,12 @@ class SmartThingsAPI:
     
     def refresh_oauth_token(self):
         """Refresh OAuth access token using refresh token"""
-        if not config.ST_CLIENT_ID or not config.ST_REFRESH_TOKEN:
-            logger.error("OAuth credentials not configured")
+        if not self.refresh_token:
+            logger.error("No refresh token available")
+            return False
+            
+        if not config.ST_CLIENT_ID:
+            logger.error("OAuth client ID not configured")
             return False
             
         # SmartThings uses /oauth/token endpoint
@@ -87,7 +153,7 @@ class SmartThingsAPI:
         # Prepare form data
         data = {
             'grant_type': 'refresh_token',
-            'refresh_token': config.ST_REFRESH_TOKEN
+            'refresh_token': self.refresh_token
         }
         
         # Use Basic Auth if client_secret is available
@@ -130,8 +196,11 @@ class SmartThingsAPI:
             # Update refresh token if a new one is provided
             new_refresh_token = token_data.get('refresh_token')
             if new_refresh_token:
-                config.ST_REFRESH_TOKEN = new_refresh_token
-                logger.info("Refresh token updated (you may want to persist this)")
+                self.refresh_token = new_refresh_token
+                logger.info("Refresh token updated")
+            
+            # Save tokens to file
+            self._save_tokens()
             
             logger.info(f"OAuth token refreshed successfully (expires in {expires_in}s)")
             return True
@@ -210,8 +279,19 @@ class SmartThingsAPI:
             return None
 
 # Initialize SmartThings API client
-# Set use_oauth=True when OAuth is configured
-st_api = SmartThingsAPI(use_oauth=False)
+# Uses OAuth by default, falls back to PAT if OAuth is not configured
+use_oauth = bool(config.ST_CLIENT_ID and (config.ST_REFRESH_TOKEN or Path(config.TOKEN_FILE).exists()))
+if not use_oauth and not config.ST_PAT:
+    logger.warning("Neither OAuth nor PAT configured! Authentication will fail.")
+elif use_oauth:
+    logger.info("Using OAuth authentication")
+else:
+    logger.info("Using PAT authentication (OAuth not configured)")
+    
+st_api = SmartThingsAPI(use_oauth=use_oauth)
+
+# Set Flask secret key for sessions
+app.secret_key = config.SECRET_KEY
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -219,8 +299,115 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '1.0.0'
+        'version': '2.0.0',
+        'auth_method': 'OAuth' if st_api.use_oauth else 'PAT'
     })
+
+@app.route('/oauth/authorize', methods=['GET'])
+def oauth_authorize():
+    """Start OAuth authorization flow"""
+    if not config.ST_CLIENT_ID:
+        return jsonify({
+            'success': False,
+            'error': 'OAuth client ID not configured'
+        }), 500
+    
+    # Build authorization URL
+    auth_url = "https://api.smartthings.com/oauth/authorize"
+    params = {
+        'client_id': config.ST_CLIENT_ID,
+        'response_type': 'code',
+        'redirect_uri': config.OAUTH_REDIRECT_URI,
+        'scope': 'r:devices:* x:devices:*'  # Adjust scopes as needed
+    }
+    
+    # Create query string
+    query = '&'.join([f"{k}={v}" for k, v in params.items()])
+    full_url = f"{auth_url}?{query}"
+    
+    logger.info(f"Redirecting to OAuth authorization URL")
+    return redirect(full_url)
+
+@app.route('/oauth/callback', methods=['GET'])
+def oauth_callback():
+    """OAuth callback endpoint"""
+    code = request.args.get('code')
+    error = request.args.get('error')
+    
+    if error:
+        logger.error(f"OAuth error: {error}")
+        return jsonify({
+            'success': False,
+            'error': error
+        }), 400
+    
+    if not code:
+        return jsonify({
+            'success': False,
+            'error': 'No authorization code received'
+        }), 400
+    
+    # Exchange code for tokens
+    token_url = "https://api.smartthings.com/oauth/token"
+    data = {
+        'grant_type': 'authorization_code',
+        'code': code,
+        'redirect_uri': config.OAUTH_REDIRECT_URI
+    }
+    
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    
+    auth = None
+    if config.ST_CLIENT_SECRET:
+        auth = (config.ST_CLIENT_ID, config.ST_CLIENT_SECRET)
+    else:
+        data['client_id'] = config.ST_CLIENT_ID
+    
+    try:
+        response = requests.post(
+            token_url,
+            data=data,
+            headers=headers,
+            auth=auth,
+            timeout=10
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Token exchange failed: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+            return jsonify({
+                'success': False,
+                'error': f'Token exchange failed: {response.text}'
+            }), 400
+        
+        token_data = response.json()
+        
+        # Update API client with new tokens
+        st_api.access_token = token_data.get('access_token')
+        st_api.refresh_token = token_data.get('refresh_token')
+        
+        expires_in = token_data.get('expires_in', 86400)
+        st_api.token_expires_at = datetime.now().timestamp() + expires_in
+        
+        # Save tokens
+        st_api._save_tokens()
+        
+        logger.info("OAuth authorization successful!")
+        
+        return jsonify({
+            'success': True,
+            'message': 'OAuth authorization successful! Tokens saved.',
+            'expires_in': expires_in
+        })
+        
+    except Exception as e:
+        logger.exception("Failed to exchange authorization code for tokens")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/launch-tv-app', methods=['POST'])
 def launch_tv_app():
@@ -252,11 +439,8 @@ def launch_tv_app():
                 'error': 'TV_APP_ID not configured'
             }), 500
         
-        if not config.ST_PAT and not st_api.access_token:
-            return jsonify({
-                'success': False,
-                'error': 'SmartThings authentication not configured'
-            }), 500
+        # Authentication check is now handled in get_headers()
+        # which will automatically refresh token if needed
         
         # Launch the app
         success, result = st_api.launch_app(device_id, config.TV_APP_ID)
@@ -332,7 +516,9 @@ def get_config():
         'm7_monitor_device_id': config.TV_DEVICE_ID_M7[:8] + '...' if config.TV_DEVICE_ID_M7 else 'Not set',
         'tv_app_id': config.TV_APP_ID if config.TV_APP_ID else 'Not set',
         'auth_method': 'OAuth' if st_api.use_oauth else 'PAT',
-        'auth_configured': bool(config.ST_PAT or st_api.access_token)
+        'auth_configured': bool(st_api.use_oauth and st_api.refresh_token) or bool(config.ST_PAT),
+        'oauth_token_valid': st_api.access_token and not st_api.is_token_expired() if st_api.use_oauth else None,
+        'token_expires_at': datetime.fromtimestamp(st_api.token_expires_at).isoformat() if st_api.token_expires_at else None
     })
 
 if __name__ == '__main__':

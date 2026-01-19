@@ -7,17 +7,27 @@ services:
     restart: unless-stopped
     ports:
       - "5000:5000"
+    volumes:
+      # Persist OAuth tokens across container restarts
+      - /share/Container/tv-app-launcher/data:/app/data
     environment:
-      - SMARTTHINGS_PAT=${SMARTTHINGS_PAT}
+      # OAuth configuration (preferred method)
       - ST_CLIENT_ID=${ST_CLIENT_ID}
       - ST_CLIENT_SECRET=${ST_CLIENT_SECRET}
       - ST_REFRESH_TOKEN=${ST_REFRESH_TOKEN}
+      - OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI:-http://localhost:5000/oauth/callback}
+      - TOKEN_FILE=${TOKEN_FILE:-/app/data/oauth_tokens.json}
+      # PAT fallback (deprecated)
+      - SMARTTHINGS_PAT=${SMARTTHINGS_PAT}
+      # Device configuration
       - TV_DEVICE_ID_S95=${TV_DEVICE_ID_S95}
       - TV_DEVICE_ID_M7=${TV_DEVICE_ID_M7}
       - TV_DEVICE_ID=${TV_DEVICE_ID}
       - TV_APP_ID=${TV_APP_ID}
-      - HOST=${HOST}
-      - PORT=${PORT}
+      # Server configuration
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-5000}
+      - SECRET_KEY=${SECRET_KEY}
     env_file:
       - /share/Container/tv-app-launcher/.env
     networks:
