@@ -3,6 +3,17 @@
 ## Branch Created
 ✅ `feature/oauth-authentication`
 
+## Latest Update: External OAuth Callback
+
+### Problem Solved
+The python-utility runs on a **local NAS** that is not accessible from the internet. Traditional OAuth requires a publicly accessible callback URL where SmartThings can redirect after user authorization.
+
+### Solution
+Reuse the **tv-weather-oauth** project (GitHub Pages) as the external callback handler:
+- **Callback URL**: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`
+- **Pattern**: Same as used by Samsung TV Weather App
+- **Flow**: Manual code exchange (user copies code from callback page)
+
 ## Changes Made
 
 ### 1. Core Application Updates (app.py)
@@ -14,8 +25,11 @@
 - **Fallback Support**: Maintains backward compatibility with PAT authentication (deprecated)
 
 #### New Endpoints
-- `GET /oauth/authorize` - Initiates OAuth authorization flow
-- `GET /oauth/callback` - Handles OAuth callback and token exchange
+- `GET /oauth/authorize` - Returns authorization URL and instructions (JSON response)
+- `POST /oauth/token` - Accepts authorization code and exchanges for tokens
+
+#### Removed Endpoints
+- `GET /oauth/callback` - No longer needed (using external callback)
 
 #### Enhanced Endpoints
 - `GET /health` - Now shows auth method and version 2.0.0
@@ -37,13 +51,8 @@
 
 #### docker-compose.yml
 - Added volume mount for persistent token storage
-- Added OAuth environment variables:
-  - `ST_CLIENT_ID`
-  - `ST_CLIENT_SECRET`
-  - `ST_REFRESH_TOKEN`
-  - `OAUTH_REDIRECT_URI`
-  - `TOKEN_FILE`
-  - `SECRET_KEY`
+- Added OAuth environment variables with external callback default:
+  - `OAUTH_REDIRECT_URI` (default: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`)
 - Organized environment variables with comments
 - Maintained backward compatibility with PAT
 
@@ -52,28 +61,32 @@
 #### New Files Created
 1. **README.md** (New)
    - Complete application documentation
-   - API endpoint reference
+   - API endpoint reference with manual OAuth flow
    - Configuration guide
    - Troubleshooting section
    - Docker deployment instructions
    - Security best practices
 
 2. **OAUTH_SETUP.md** (New)
-   - Step-by-step OAuth setup guide
+   - Step-by-step OAuth setup guide for local NAS
    - SmartThings Developer Workspace configuration
-   - Authorization flow walkthrough
+   - **Manual authorization flow walkthrough**
    - Testing procedures
    - Troubleshooting common issues
 
 3. **OAUTH_MIGRATION.md** (New)
    - Migration guide from v1.x to v2.0
-   - Three migration options:
-     - Using existing refresh token
-     - New OAuth authorization flow
-     - Continue using PAT (temporary)
+   - Three migration options (with manual flow instructions)
    - Token management details
    - Security considerations
    - Rollback procedures
+
+4. **EXTERNAL_CALLBACK_ARCHITECTURE.md** (New)
+   - **Detailed explanation of external callback pattern**
+   - Architecture diagrams
+   - Comparison with traditional OAuth
+   - Why this approach is necessary for local NAS
+   - Reuse of tv-weather-oauth project
 
 #### Updated Files
 4. **.env.example**
@@ -85,14 +98,23 @@
 
 ## Key Features
 
-### OAuth Flow
-1. User visits `/oauth/authorize`
-2. Redirected to SmartThings login
-3. User grants permissions
-4. SmartThings redirects to `/oauth/callback` with authorization code
-5. App exchanges code for access and refresh tokens
-6. Tokens saved to persistent storage
-7. Future requests automatically refresh tokens as needed
+### OAuth Flow (Manual for Local NAS)
+1. User requests authorization URL: `GET /oauth/authorize`
+2. User opens URL in browser on any device
+3. User authorizes on SmartThings
+4. SmartThings redirects to GitHub Pages callback
+5. Callback page displays authorization code
+6. User copies code and submits: `POST /oauth/token {"code":"..."}`
+7. Service exchanges code for tokens
+8. Tokens saved to persistent storage
+9. Future requests automatically refresh tokens as needed
+
+### External Callback Integration
+- **Reuses tv-weather-oauth project** (GitHub Pages)
+- Same callback URL as Samsung TV Weather App
+- No server maintenance required (static HTML)
+- No SSL certificate management
+- Works despite local network limitations
 
 ### Token Lifecycle
 - **Access Token**: 24 hours validity
@@ -113,9 +135,15 @@
 ```env
 ST_CLIENT_ID=your-client-id
 ST_CLIENT_SECRET=your-client-secret
-OAUTH_REDIRECT_URI=http://your-server:5000/oauth/callback
+# External callback (GitHub Pages) - required for local NAS
+OAUTH_REDIRECT_URI=https://tatuvlak.github.io/tv-weather-oauth/callback.html
 SECRET_KEY=random-secret-key
 ```
+
+### SmartThings OAuth Registration
+When registering at https://smartthings.developer.samsung.com/:
+- **Redirect URI**: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`
+- ⚠️ Must be **exact match** - cannot use local URL
 
 ### Complete Configuration
 See `.env.example` for all available options.
@@ -124,17 +152,19 @@ See `.env.example` for all available options.
 
 ### For New Installations
 1. Register OAuth app at SmartThings Developer Workspace
+   - Use redirect URI: `https://tatuvlak.github.io/tv-weather-oauth/callback.html`
 2. Configure `.env` with OAuth credentials
 3. Run `docker-compose up --build -d`
-4. Visit `http://your-server:5000/oauth/authorize`
-5. Grant permissions
-6. Done! Tokens managed automatically
+4. Get authorization URL: `curl http://nas:5000/oauth/authorize`
+5. Open URL in browser, authorize, copy code from callback page
+6. Submit code: `curl -X POST http://nas:5000/oauth/token -H "Content-Type: application/json" -d '{"code":"YOUR-CODE"}'`
+7. Done! Tokens managed automatically
 
 ### For Existing Installations (Migrating from PAT)
 1. Get OAuth credentials from SmartThings
-2. Add OAuth settings to `.env`
+2. Add OAuth settings to `.env` (with external callback URL)
 3. Rebuild and restart: `docker-compose up --build -d`
-4. Run authorization flow (one-time)
+4. Follow manual authorization flow (steps 4-6 above)
 5. Optional: Remove `SMARTTHINGS_PAT` from `.env`
 
 ## Testing Checklist
@@ -215,23 +245,26 @@ docker logs tv-app-launcher | grep -i "auth"
 
 ```
 python-utility/
-├── app.py                    # Modified - Core OAuth implementation
-├── Dockerfile                # Modified - Added data directory
-├── docker-compose.yml        # Modified - Added volume and OAuth env vars
-├── .env.example             # Modified - OAuth-first configuration
-├── README.md                # New - Complete documentation
-├── OAUTH_SETUP.md           # New - Setup guide
-└── OAUTH_MIGRATION.md       # New - Migration guide
+├── app.py                              # Modified - OAuth with external callback
+├── Dockerfile                          # Modified - Added data directory
+├── docker-compose.yml                  # Modified - External callback URL
+├── .env.example                       # Modified - External callback config
+├── README.md                          # New - Complete documentation
+├── OAUTH_SETUP.md                     # New - Manual OAuth setup guide
+├── OAUTH_MIGRATION.md                 # New - Migration guide
+└── EXTERNAL_CALLBACK_ARCHITECTURE.md  # New - Architecture explanation
 ```
 
 ## Commit Information
 
 - **Branch**: `feature/oauth-authentication`
-- **Commit**: `2cc179d`
-- **Message**: "feat: Add OAuth 2.0 authentication to python-utility"
-- **Files Changed**: 7 files
-- **Insertions**: 1057 lines
-- **Deletions**: 32 lines
+- **Latest Commit**: `2ed2bcc`
+- **Commits**:
+  1. `2cc179d` - Initial OAuth 2.0 implementation
+  2. `b9cf4f0` - Documentation summary
+  3. `2ed2bcc` - External callback refactor for local NAS
+- **Total Files Changed**: 8 files
+- **Total Lines Added**: ~1500+ lines (including comprehensive docs)
 
 ## Ready for Review
 
