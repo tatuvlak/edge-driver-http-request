@@ -19,7 +19,7 @@ ssh ${Username}@${QnapIP} "mkdir -p /share/Container/tv-app-launcher"
 
 # Step 2: Upload files
 Write-Host "`n[2/6] Uploading files..." -ForegroundColor Green
-$sourceDir = "C:\Users\barte\Documents\Projekty\edge-driver-http-request\python-utility"
+$sourceDir = Join-Path $PSScriptRoot "python-utility"
 
 Write-Host "  - Uploading app.py"
 scp "${sourceDir}\app.py" ${Username}@${QnapIP}:/share/Container/tv-app-launcher/

@@ -8,8 +8,8 @@ Write-Host "======================================" -ForegroundColor Yellow
 Write-Host ""
 
 $scriptPath = Split-Path -Parent $PSScriptRoot
-$pythonScriptPath = "C:\Users\barte\Documents\Projekty\python scripts\tv-app-launch.py"
-$configJsPath = "C:\Users\barte\Documents\Projekty\samsung-tv-weather-app\tizen-app\config.js"
+$pythonScriptPath = Join-Path (Split-Path $scriptPath -Parent) "python scripts\tv-app-launch.py"
+$configJsPath = Join-Path (Split-Path $scriptPath -Parent) "samsung-tv-weather-app\tizen-app\config.js"
 
 Write-Host "Extracting credentials from existing projects..." -ForegroundColor Cyan
 Write-Host ""

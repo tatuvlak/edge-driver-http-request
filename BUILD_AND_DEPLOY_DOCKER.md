@@ -23,7 +23,7 @@ Open PowerShell and run:
 
 ```powershell
 # Navigate to project directory
-cd C:\Users\barte\Documents\Projekty\edge-driver-http-request\python-utility
+cd $PWD\python-utility
 
 # Build image for Linux (QNAP runs Linux, not Windows)
 docker build --platform linux/amd64 -t tv-app-launcher:latest .

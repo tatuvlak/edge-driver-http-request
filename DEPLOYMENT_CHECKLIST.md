@@ -84,7 +84,7 @@ Use this checklist to ensure everything is deployed correctly.
 
 - [ ] **Package driver**
   ```powershell
-  cd "C:\Users\barte\Documents\Projekty\edge-driver-http-request\edge-driver"
+  cd "$PWD\edge-driver"
   smartthings edge:drivers:package .
   ```
 

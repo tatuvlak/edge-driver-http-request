@@ -14,7 +14,7 @@ Open PowerShell on Windows:
 
 ```powershell
 # Navigate to your project directory
-cd "C:\Users\barte\Documents\Projekty\edge-driver-http-request\python-utility"
+cd "$PWD\python-utility"
 
 # Build the Docker image
 docker build -t tv-app-launcher:latest .

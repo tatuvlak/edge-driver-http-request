@@ -49,7 +49,7 @@ You have several options:
 On your Windows PC (not in SSH session):
 
 ```powershell
-cd "C:\Users\barte\Documents\Projekty\edge-driver-http-request"
+cd "$PWD"
 
 # Copy the entire python-utility folder
 scp -r python-utility admin@YOUR_QNAP_IP:/share/Container/tv-app-launcher/

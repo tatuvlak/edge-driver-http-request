@@ -56,7 +56,7 @@ Channel ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 Navigate to the edge-driver folder:
 
 ```powershell
-cd "C:\Users\barte\Documents\Projekty\edge-driver-http-request\edge-driver"
+cd "$PWD\edge-driver"
 ```
 
 Package and upload the driver (this single command does both):
@@ -134,7 +134,7 @@ The driver will be installed to your hub (this may take a few minutes).
 The driver now includes auto-device creation. Repackage and update:
 
 ```powershell
-cd "C:\Users\barte\Documents\Projekty\edge-driver-http-request\edge-driver"
+cd "$PWD\edge-driver"
 smartthings edge:drivers:package .
 ```
 
