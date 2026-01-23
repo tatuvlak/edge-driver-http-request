@@ -85,7 +85,9 @@ class SmartThingsAPI:
                     self.access_token = data.get('access_token')
                     self.refresh_token = data.get('refresh_token')
                     self.token_expires_at = data.get('expires_at')
+                    self._token_created_at = data.get('created_at', datetime.now().timestamp())
                     logger.info("OAuth tokens loaded from file")
+                    logger.info(f"Loaded: has_access_token={bool(self.access_token)}, has_refresh_token={bool(self.refresh_token)}")
             else:
                 # Try to use refresh token from environment if file doesn't exist
                 if config.ST_REFRESH_TOKEN:
@@ -100,16 +102,21 @@ class SmartThingsAPI:
             token_file = Path(config.TOKEN_FILE)
             token_file.parent.mkdir(parents=True, exist_ok=True)
             
+            # Store token creation timestamp for age tracking
+            self._token_created_at = datetime.now().timestamp()
+            
             data = {
                 'access_token': self.access_token,
                 'refresh_token': self.refresh_token,
                 'expires_at': self.token_expires_at,
+                'created_at': self._token_created_at,
                 'updated_at': datetime.now().isoformat()
             }
             
             with open(token_file, 'w') as f:
                 json.dump(data, f, indent=2)
             logger.info("OAuth tokens saved to file")
+            logger.info(f"Saved: has_access_token={bool(self.access_token)}, has_refresh_token={bool(self.refresh_token)}")
         except Exception as e:
             logger.error(f"Failed to save tokens to file: {e}")
     
@@ -148,6 +155,15 @@ class SmartThingsAPI:
         if not config.ST_CLIENT_ID:
             logger.error("OAuth client ID not configured")
             return False
+        
+        # Calculate token age for logging
+        if hasattr(self, '_token_created_at'):
+            token_age_hours = (datetime.now().timestamp() - self._token_created_at) / 3600
+            logger.info(f"Attempting token refresh (token age: {token_age_hours:.2f} hours)")
+        else:
+            logger.info("Attempting token refresh")
+        
+        logger.info(f"Token status: has_refresh_token={bool(self.refresh_token)}")
             
         # SmartThings uses /oauth/token endpoint
         token_url = "https://api.smartthings.com/oauth/token"
@@ -195,16 +211,24 @@ class SmartThingsAPI:
             expires_in = token_data.get('expires_in', 86400)  # Default 24 hours
             self.token_expires_at = datetime.now().timestamp() + expires_in
             
-            # Update refresh token if a new one is provided
+            # Preserve existing refresh_token if new one not provided
+            # SmartThings typically doesn't return refresh_token on refresh flow
             new_refresh_token = token_data.get('refresh_token')
             if new_refresh_token:
                 self.refresh_token = new_refresh_token
-                logger.info("Refresh token updated")
+                logger.info("Refresh token updated with new value")
+            else:
+                logger.info("Preserving existing refresh_token (not returned in response)")
+            
+            # Validate we have a refresh token
+            if not self.refresh_token:
+                logger.warning("No refresh_token available - tokens may not be refreshable")
             
             # Save tokens to file
             self._save_tokens()
             
             logger.info(f"OAuth token refreshed successfully (expires in {expires_in}s)")
+            logger.info(f"Token status: has_access_token={bool(self.access_token)}, has_refresh_token={bool(self.refresh_token)}")
             return True
             
         except Exception as e:
