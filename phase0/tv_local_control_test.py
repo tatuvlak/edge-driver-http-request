@@ -267,7 +267,7 @@ def probe_app_list(tv: SamsungTVWS, app_id: str) -> tuple[bool, bool]:
 # 5. Launch — the decisive test
 # --------------------------------------------------------------------------
 
-def probe_launch(tv: SamsungTVWS, ip: str, app_id: str) -> bool:
+def probe_launch(tv: SamsungTVWS, app_id: str, interactive: bool) -> bool:
     header("5. Launching the app (the decisive test)")
     print("  Watch the TV screen. Something should visibly happen within a few seconds.\n")
 
@@ -304,12 +304,111 @@ def probe_launch(tv: SamsungTVWS, ip: str, app_id: str) -> bool:
     except Exception:
         record("App confirmed running", SKIP, "TV does not report status for this app")
 
+    if not interactive:
+        print("\n  Non-interactive run: reporting whether the command was ACCEPTED, which")
+        print("  is not the same as the app opening. Re-run interactively to confirm.")
+        return launched
+
     print(
-        "\n  >>> Look at the TV now. Did the weather app actually open?\n"
-        "      That observation matters more than any [PASS] above — some sets\n"
-        "      acknowledge the command and then ignore it."
+        "\n  Some sets accept the command and then ignore it, so the API result above\n"
+        "  is not trustworthy on its own. Your eyes decide this one.\n"
     )
-    return launched
+    opened = ask_yes_no("Did the weather app actually open on screen?")
+    record("App actually opened", PASS if opened else FAIL,
+           "confirmed on screen" if opened else "no — command accepted but nothing happened")
+    return opened
+
+
+# --------------------------------------------------------------------------
+# D. Diagnosis — only runs when the launch failed
+# --------------------------------------------------------------------------
+
+# Stock Samsung app ids, present on essentially every Tizen set. Used as a
+# control: if one of these launches but yours does not, the WebSocket API is
+# fine and the problem is your app (not installed, or a different id).
+KNOWN_APPS = [("YouTube", "111299001912"), ("Netflix", "11101200001")]
+
+
+def ask_yes_no(question: str) -> bool:
+    while True:
+        try:
+            answer = input(f"  >>> {question} [y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if answer.startswith("y"):
+            return True
+        if answer.startswith("n"):
+            return False
+
+
+def probe_diagnose(tv: SamsungTVWS, app_id: str) -> None:
+    """Separate 'this device refuses app launches' from 'your app is not there'.
+
+    Both look identical from the API — the commands are accepted either way —
+    so the only reliable instrument is your eyes on the screen.
+    """
+    header("D. Diagnosis — why did the launch fail?")
+    print(
+        "  Two very different problems look the same from the API, so this asks\n"
+        "  you to watch the screen and answer. Take your time.\n"
+    )
+
+    # D1 — is the control channel alive at all?
+    print("  Sending KEY_HOME. Watch the screen.\n")
+    try:
+        tv.send_key("KEY_HOME")
+        time.sleep(3)
+        control_ok = ask_yes_no("Did the screen react at all (home screen, menu, anything)?")
+        record("Control channel", PASS if control_ok else FAIL,
+               "KEY_HOME had a visible effect" if control_ok else "no visible reaction")
+    except Exception as err:
+        record("Control channel", FAIL, f"{type(err).__name__}: {err}")
+        control_ok = False
+
+    # D2 — can it launch an app that is definitely installed?
+    known_ok = False
+    known_name = ""
+    for name, known_id in KNOWN_APPS:
+        print(f"\n  Trying to launch {name} as a control. Watch the screen.\n")
+        try:
+            tv.run_app(known_id)
+            time.sleep(5)
+        except Exception as err:
+            record(f"Launch {name}", FAIL, f"{type(err).__name__}: {err}")
+            continue
+        if ask_yes_no(f"Did {name} open?"):
+            record(f"Launch {name}", PASS, "stock app launched")
+            known_ok, known_name = True, name
+            break
+        record(f"Launch {name}", FAIL, "command accepted, nothing happened")
+
+    # Conclusion
+    header("Diagnosis")
+    if not control_ok:
+        print("  The control channel itself is not working — KEY_HOME did nothing.")
+        print("  Pairing succeeded, so this is not authorisation. Check that the")
+        print("  device is not in a power state that ignores input, and retry.")
+        print("  Until KEY_HOME works, the launch result means nothing either way.")
+        return
+
+    if known_ok:
+        print(f"  Local control WORKS on this device — {known_name} launched on command.")
+        print(f"  So the WebSocket API is fine and the problem is specific to")
+        print(f"  '{app_id}': either it is not installed here, or it is installed")
+        print("  under a different id.")
+        print("\n  Next: confirm the weather app is actually sideloaded on THIS device")
+        print("  (it may only be on the S95), then re-run with the correct --app-id.")
+        print("  This is good news for the migration — the mechanism is proven.")
+        return
+
+    print("  The control channel works (KEY_HOME responded) but no app would")
+    print("  launch, including stock ones. That is this model refusing app")
+    print("  launches over the local API — a real restriction, not your app.")
+    print("\n  Fallback 1 from the plan applies and is now known to be viable:")
+    print("  Wake-on-LAN to power on, then KEY_HOME plus a short navigation macro,")
+    print("  since key input demonstrably works.")
+    print("\n  Test the S95 before designing around this — it is the default target")
+    print("  and may well behave differently.")
 
 
 # --------------------------------------------------------------------------
@@ -403,7 +502,10 @@ def main() -> int:
     parser.add_argument("--app-id", default=DEFAULT_APP_ID, help=f"Tizen app id (default: {DEFAULT_APP_ID})")
     parser.add_argument("--token-file", default="tv-token.txt", help="where to persist the pairing token")
     parser.add_argument("--wol", action="store_true", help="also test Wake-on-LAN (asks you to turn the TV off)")
+    parser.add_argument("--non-interactive", action="store_true",
+                        help="never prompt; report API acceptance only and skip diagnosis")
     args = parser.parse_args()
+    interactive = not args.non_interactive
 
     print(f"Phase 0 — local TV control probe against {args.ip}")
 
@@ -436,7 +538,10 @@ def main() -> int:
             )
             tv.open()
 
-        launched = probe_launch(tv, args.ip, args.app_id)
+        launched = probe_launch(tv, args.app_id, interactive)
+
+        if not launched and interactive:
+            probe_diagnose(tv, args.app_id)
     finally:
         try:
             tv.close()

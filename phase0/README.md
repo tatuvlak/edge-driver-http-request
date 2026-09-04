@@ -60,9 +60,14 @@ If your Tizen app is packaged under a different id than the default
    never answer. That is expected and harmless; the probe reconnects and carries
    on to the launch test, which is the one that matters.
 5. **Launches the app** — tries `run_app` with both `DEEP_LINK` and
-   `NATIVE_LAUNCH`, falls back to the REST launch, then tries to confirm the app
-   is actually running.
-6. Optionally sends a Wake-on-LAN magic packet and waits for the TV to answer.
+   `NATIVE_LAUNCH`, falls back to the REST launch, then **asks you whether the app
+   actually opened**. Your answer is what counts: some sets accept the command and
+   silently ignore it, so API success is not evidence.
+6. **Diagnoses a failure** (only if the app did not open) — sends `KEY_HOME` to
+   check the control channel is alive at all, then tries launching a stock app
+   like YouTube as a control. That separates the two very different causes:
+   *this model refuses app launches* versus *your app is not installed here*.
+7. Optionally sends a Wake-on-LAN magic packet and waits for the TV to answer.
 
 Exit codes: `0` launch worked · `1` tested and failed · `2` inconclusive.
 
