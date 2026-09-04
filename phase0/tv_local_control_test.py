@@ -40,6 +40,15 @@ try:
 except ImportError:
     send_magic_packet = None
 
+# Port 8002 uses the TV's self-signed certificate; that is expected and the
+# library disables verification deliberately. Keep the warning out of the report.
+try:
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
+
 
 DEFAULT_APP_ID = "tvweather1.tvweather"
 
@@ -267,55 +276,69 @@ def probe_app_list(tv: SamsungTVWS, app_id: str) -> tuple[bool, bool]:
 # 5. Launch — the decisive test
 # --------------------------------------------------------------------------
 
+LAUNCH_METHODS = [
+    ("WebSocket run_app DEEP_LINK", lambda tv, aid: tv.run_app(aid, app_type="DEEP_LINK")),
+    ("WebSocket run_app NATIVE_LAUNCH", lambda tv, aid: tv.run_app(aid, app_type="NATIVE_LAUNCH")),
+    ("REST POST /applications", lambda tv, aid: tv.rest_app_run(aid)),
+]
+
+
+def try_every_launch_method(tv: SamsungTVWS, app_id: str, interactive: bool) -> bool:
+    """Attempt each launch mechanism, confirming with the operator after each.
+
+    run_app sends over the websocket and never reports back, so an exception is
+    not available as a failure signal — an unsupported request looks exactly
+    like a successful one. The only way to know which method works is to try
+    them all and look at the screen, so that is what this does.
+    """
+    for label, launch in LAUNCH_METHODS:
+        try:
+            launch(tv, app_id)
+        except Exception as err:
+            record(label, FAIL, f"{type(err).__name__}: {err}")
+            continue
+
+        time.sleep(4)
+
+        if not interactive:
+            record(label, WARN, "sent; cannot confirm without someone watching")
+            continue
+
+        if ask_yes_no(f"{label}: did it open?"):
+            record(label, PASS, "confirmed on screen")
+            return True
+        record(label, FAIL, "accepted, nothing happened")
+
+    return False
+
+
 def probe_launch(tv: SamsungTVWS, app_id: str, interactive: bool) -> bool:
     header("5. Launching the app (the decisive test)")
-    print("  Watch the TV screen. Something should visibly happen within a few seconds.\n")
 
-    launched = False
-
-    for app_type in ("DEEP_LINK", "NATIVE_LAUNCH"):
-        try:
-            tv.run_app(app_id, app_type=app_type)
-            time.sleep(4)
-            record(f"WebSocket run_app ({app_type})", PASS, "command accepted")
-            launched = True
-            break
-        except Exception as err:
-            record(f"WebSocket run_app ({app_type})", FAIL, f"{type(err).__name__}: {err}")
-
-    if not launched:
-        try:
-            tv.rest_app_run(app_id)
-            time.sleep(4)
-            record("REST app run", PASS, "command accepted")
-            launched = True
-        except (HttpApiError, Exception) as err:
-            record("REST app run", FAIL, f"{type(err).__name__}: {err}")
-
-    # "Accepted" is not "worked" — try to confirm independently.
+    # Does the TV even recognise this id? A real payload here means the id is
+    # right and REST app endpoints work, which is worth knowing before blaming
+    # the app for a launch that never happens.
     try:
         status = tv.rest_app_status(app_id)
-        visible = status.get("visible")
-        running = status.get("running")
-        if visible or running:
-            record("App confirmed running", PASS, f"visible={visible} running={running}")
-        else:
-            record("App confirmed running", WARN, f"visible={visible} running={running}")
-    except Exception:
-        record("App confirmed running", SKIP, "TV does not report status for this app")
+        record("App id recognised", PASS,
+               f"REST knows '{app_id}' (visible={status.get('visible')} running={status.get('running')})")
+    except Exception as err:
+        record("App id recognised", WARN, f"no status for '{app_id}' ({type(err).__name__})")
+        print("  The TV may not know this id. If the launches below all fail, that is")
+        print("  the first thing to re-check.")
+
+    print("\n  Trying each launch mechanism in turn. Watch the screen and answer")
+    print("  after each one — the first that works is the one Phase 2 will use.\n")
+
+    opened = try_every_launch_method(tv, app_id, interactive)
 
     if not interactive:
-        print("\n  Non-interactive run: reporting whether the command was ACCEPTED, which")
-        print("  is not the same as the app opening. Re-run interactively to confirm.")
-        return launched
+        print("\n  Non-interactive run: commands were sent but nothing was confirmed.")
+        print("  Re-run interactively for a real answer.")
+        return False
 
-    print(
-        "\n  Some sets accept the command and then ignore it, so the API result above\n"
-        "  is not trustworthy on its own. Your eyes decide this one.\n"
-    )
-    opened = ask_yes_no("Did the weather app actually open on screen?")
     record("App actually opened", PASS if opened else FAIL,
-           "confirmed on screen" if opened else "no — command accepted but nothing happened")
+           "confirmed on screen" if opened else "no method worked")
     return opened
 
 
@@ -369,18 +392,12 @@ def probe_diagnose(tv: SamsungTVWS, app_id: str) -> None:
     known_ok = False
     known_name = ""
     for name, known_id in KNOWN_APPS:
-        print(f"\n  Trying to launch {name} as a control. Watch the screen.\n")
-        try:
-            tv.run_app(known_id)
-            time.sleep(5)
-        except Exception as err:
-            record(f"Launch {name}", FAIL, f"{type(err).__name__}: {err}")
-            continue
-        if ask_yes_no(f"Did {name} open?"):
+        print(f"\n  Trying to launch {name} as a control, by every method.\n")
+        if try_every_launch_method(tv, known_id, True):
             record(f"Launch {name}", PASS, "stock app launched")
             known_ok, known_name = True, name
             break
-        record(f"Launch {name}", FAIL, "command accepted, nothing happened")
+        record(f"Launch {name}", FAIL, "no method worked")
 
     # Conclusion
     header("Diagnosis")
