@@ -55,7 +55,10 @@ If your Tizen app is packaged under a different id than the default
 2. Reads the unauthenticated `/api/v2/` device info — model, firmware, MAC,
    whether the set wants token auth.
 3. Pairs over the WebSocket and persists the token to `tv-token.txt`.
-4. Lists installed apps and looks for yours.
+4. Lists installed apps and looks for yours. **This step can pause for up to 15
+   seconds and often reports nothing** — many 2022+ sets accept the request and
+   never answer. That is expected and harmless; the probe reconnects and carries
+   on to the launch test, which is the one that matters.
 5. **Launches the app** — tries `run_app` with both `DEEP_LINK` and
    `NATIVE_LAUNCH`, falls back to the REST launch, then tries to confirm the app
    is actually running.

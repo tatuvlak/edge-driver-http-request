@@ -23,9 +23,11 @@ import json
 import socket
 import ssl
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any, Callable
 
 try:
     from samsungtvws import SamsungTVWS
@@ -61,6 +63,33 @@ def record(step: str, status: str, detail: str = "") -> None:
 
 def header(text: str) -> None:
     print(f"\n{text}\n{'-' * len(text)}")
+
+
+def call_with_timeout(fn: Callable[[], Any], seconds: float) -> tuple[str, Any]:
+    """Run fn on a daemon thread and give up after `seconds`.
+
+    samsungtvws makes blocking recv() calls that depend on a TV actually
+    answering. Several models accept a request and then say nothing at all, so
+    we cap the wait here rather than trusting the library's socket timeout.
+    Returns ("ok", value) | ("error", exc) | ("timeout", None).
+    """
+    box: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as err:  # noqa: BLE001 - reported to the caller
+            box["error"] = err
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(seconds)
+
+    if thread.is_alive():
+        return "timeout", None
+    if "error" in box:
+        return "error", box["error"]
+    return "ok", box.get("value")
 
 
 # --------------------------------------------------------------------------
@@ -182,18 +211,34 @@ def probe_pairing(ip: str, token_file: Path, token_auth: bool) -> SamsungTVWS | 
 # 4. App list
 # --------------------------------------------------------------------------
 
-def probe_app_list(tv: SamsungTVWS, app_id: str) -> bool:
+def probe_app_list(tv: SamsungTVWS, app_id: str) -> tuple[bool, bool]:
+    """Returns (app_found, connection_stalled).
+
+    This step is informational only — step 5 is what decides the migration — so
+    nothing here is allowed to hold the run up.
+    """
     header("4. Installed applications")
-    try:
-        apps = tv.app_list()
-    except Exception as err:
-        record("List installed apps", FAIL, f"{type(err).__name__}: {err}")
-        return False
+    print(
+        "  Asking the TV what it has installed. This is optional and many 2022+\n"
+        "  sets never answer, so it may pause for up to 15 seconds before moving on.\n"
+    )
+
+    outcome, apps = call_with_timeout(tv.app_list, 15)
+
+    if outcome == "timeout":
+        record("List installed apps", WARN, "no reply within 15s — firmware ignores this request")
+        print("  Expected on newer firmware. Reconnecting, then on to the launch test.")
+        return False, True
+
+    if outcome == "error":
+        record("List installed apps", WARN, f"{type(apps).__name__}: {apps}")
+        print("  Not fatal — launching by id can still work. Continuing.")
+        return False, True
 
     if not apps:
-        record("List installed apps", WARN, "TV returned nothing — common on newer firmware")
-        print("  Not fatal: launching by id can still work. Continuing.")
-        return False
+        record("List installed apps", WARN, "TV returned an empty list")
+        print("  Not fatal — launching by id can still work. Continuing.")
+        return False, False
 
     record("List installed apps", PASS, f"{len(apps)} apps reported")
 
@@ -215,7 +260,7 @@ def probe_app_list(tv: SamsungTVWS, app_id: str) -> bool:
     else:
         record("Weather app visible", WARN, f"'{app_id}' not in the list")
         print("  Sideloaded apps are often omitted from this list. The launch test below is what counts.")
-    return match is not None
+    return match is not None, False
 
 
 # --------------------------------------------------------------------------
@@ -373,7 +418,24 @@ def main() -> int:
         return verdict(False, None, tested=False)
 
     try:
-        probe_app_list(tv, args.app_id)
+        _found, stalled = probe_app_list(tv, args.app_id)
+
+        if stalled:
+            # A request the TV never answered can leave an unread reply in the
+            # stream, which would desync the launch commands below. Start clean.
+            try:
+                tv.close()
+            except Exception:
+                pass
+            tv = SamsungTVWS(
+                host=args.ip,
+                port=8002 if info.get("token_auth", True) else 8001,
+                token_file=str(Path(args.token_file)),
+                name=CLIENT_NAME,
+                timeout=15,
+            )
+            tv.open()
+
         launched = probe_launch(tv, args.ip, args.app_id)
     finally:
         try:
