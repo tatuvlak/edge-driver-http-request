@@ -52,3 +52,7 @@ desktop.ini
 *.pem
 *.key
 secrets/
+
+# Phase 0 probe artefacts — tv-token.txt is a credential for local TV control
+phase0/tv-token.txt
+phase0/.venv/

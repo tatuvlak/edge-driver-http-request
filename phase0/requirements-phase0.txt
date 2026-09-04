@@ -1,0 +1,3 @@
+# Phase 0 probe only — not used by the production service.
+samsungtvws>=3.0.5
+wakeonlan>=4.0.0
