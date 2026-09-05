@@ -14,12 +14,16 @@ from flask import Flask, request, jsonify, redirect, session
 import requests
 import os
 import json
+import hmac
 import logging
+import time
+from functools import wraps
 from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
 
 import tv_local
+import weather_store
 
 # Load environment variables from .env file
 load_dotenv()
@@ -69,6 +73,20 @@ class Config:
 
     TV_APP_ID = os.environ.get('TV_APP_ID', '')  # Your weather app ID
     
+    # Weather data hub
+    WEATHER_DB_PATH = os.environ.get('WEATHER_DB_PATH', '/app/data/weather.db')
+    # A reading older than this is served with stale=true so the displays can
+    # say so rather than quietly showing an hour-old number as if it were now.
+    WEATHER_STALE_AFTER = float(os.environ.get('WEATHER_STALE_AFTER', 120))
+    WEATHER_RETENTION_DAYS = float(os.environ.get('WEATHER_RETENTION_DAYS', 30))
+
+    # Three separate tokens, because these have very different blast radii.
+    # The read token ships inside the .wgt on the TV, so it must never be the
+    # one that can forge sensor readings or command hardware.
+    INGEST_TOKEN = os.environ.get('INGEST_TOKEN', '')   # write: the ESP32 only
+    READ_TOKEN = os.environ.get('READ_TOKEN', '')       # read: TV and phone apps
+    ACTION_TOKEN = os.environ.get('ACTION_TOKEN', '')   # act: the Edge driver
+
     # Server configuration
     PORT = int(os.environ.get('PORT', 5000))
     HOST = os.environ.get('HOST', '0.0.0.0')
@@ -83,6 +101,46 @@ def get_displays():
         's95': tv_local.Display(key='s95', name='S95 TV', host=config.TV_HOST_S95),
         'm7': tv_local.Display(key='m7', name='M7 Monitor', host=config.TV_HOST_M7),
     }
+
+def _token_ok(expected):
+    """Check the request's bearer token against `expected`.
+
+    An unset token means that endpoint is unauthenticated. That is deliberate
+    for the action token: the Edge driver currently sends no credentials, and
+    turning this on before the driver is republished would break the routine.
+    Ingest and read are new endpoints with no such constraint, so they should
+    always have tokens set.
+    """
+    if not expected:
+        return True
+    supplied = request.headers.get('Authorization', '')
+    if supplied.startswith('Bearer '):
+        supplied = supplied[7:]
+    else:
+        supplied = request.headers.get('X-Auth-Token', '')
+    # compare_digest over a constant-time comparison of equal-length strings
+    return hmac.compare_digest(supplied, expected)
+
+
+def require_token(get_expected):
+    """Guard a route with one of the configured tokens."""
+    def decorator(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            if not _token_ok(get_expected()):
+                return jsonify({'success': False, 'error': 'unauthorized'}), 401
+            return view(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+try:
+    weather_store.init(config.WEATHER_DB_PATH)
+except Exception:
+    # A broken store must not stop the service launching apps — that path is
+    # independent and is the one a routine depends on.
+    logger.exception("Could not initialise the weather store at %s", config.WEATHER_DB_PATH)
+
 
 class SmartThingsAPI:
     """SmartThings API client with OAuth support"""
@@ -348,11 +406,21 @@ app.secret_key = config.SECRET_KEY
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    try:
+        row = weather_store.latest(config.WEATHER_DB_PATH)
+        weather = {
+            'has_readings': row is not None,
+            'age_seconds': round(time.time() - row['recorded_at'], 1) if row else None,
+        }
+    except Exception as err:
+        weather = {'error': str(err)}
+
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '3.0.0',
+        'version': '3.1.0',
         'launch_method': 'local REST (no SmartThings)',
+        'weather': weather,
     })
 
 
@@ -499,6 +567,7 @@ def oauth_token_exchange():
         }), 500
 
 @app.route('/launch-tv-app', methods=['POST'])
+@require_token(lambda: config.ACTION_TOKEN)
 def launch_tv_app():
     """Launch the weather app on a display — called by the Edge Driver.
 
@@ -562,6 +631,118 @@ def launch_tv_app():
             'error': str(e)
         }), 500
 
+# Pruning is done on the ingest path rather than a background thread, because
+# gunicorn runs several workers and a timer in each would just multiply the work.
+# Once an hour is plenty at one reading every 30 seconds.
+_PRUNE_INTERVAL = 3600.0
+_last_prune = 0.0
+
+
+def _prune_if_due():
+    global _last_prune
+    now = time.time()
+    if now - _last_prune < _PRUNE_INTERVAL:
+        return
+    _last_prune = now
+    try:
+        weather_store.prune(config.WEATHER_DB_PATH, config.WEATHER_RETENTION_DAYS)
+    except Exception:
+        # Never fail an ingest over housekeeping; the reading is the point.
+        logger.exception("Pruning old readings failed")
+
+
+@app.route('/ingest', methods=['POST'])
+@require_token(lambda: config.INGEST_TOKEN)
+def ingest_reading():
+    """Accept a reading from the weather station.
+
+    The ESP32 posts here every 30 seconds, in the same loop that already updates
+    its Matter clusters. This is the path that replaces reading the sensor back
+    out of the SmartThings cloud.
+    """
+    try:
+        reading = weather_store.validate(request.get_json(silent=True))
+    except weather_store.ValidationError as err:
+        # Say exactly what was wrong: this is read off a serial console with no
+        # debugger attached.
+        logger.warning("Rejected reading: %s", err)
+        return jsonify({'success': False, 'error': str(err)}), 400
+
+    try:
+        recorded_at = weather_store.record(config.WEATHER_DB_PATH, reading)
+    except Exception as err:
+        logger.exception("Could not store reading")
+        return jsonify({'success': False, 'error': str(err)}), 500
+
+    logger.info("Recorded reading: %s", ", ".join(f"{k}={v}" for k, v in reading.items()))
+    _prune_if_due()
+    return jsonify({
+        'success': True,
+        'recorded_at': datetime.fromtimestamp(recorded_at).isoformat(),
+        'fields': sorted(reading),
+    })
+
+
+def _serve_reading(row):
+    """Shape a stored row for the apps, with an honest freshness signal."""
+    recorded_at = row.pop('recorded_at')
+    age = max(0.0, time.time() - recorded_at)
+    payload = {k: v for k, v in row.items() if v is not None}
+    payload['recorded_at'] = datetime.fromtimestamp(recorded_at).isoformat()
+    payload['age_seconds'] = round(age, 1)
+    # The displays need to be able to tell "this is now" from "this is whatever
+    # the sensor last managed to send", rather than rendering both identically.
+    payload['stale'] = age > config.WEATHER_STALE_AFTER
+    return payload
+
+
+@app.route('/api/weather', methods=['GET'])
+@require_token(lambda: config.READ_TOKEN)
+def api_weather():
+    """The latest reading — what the TV and phone apps poll."""
+    try:
+        row = weather_store.latest(config.WEATHER_DB_PATH)
+    except Exception as err:
+        logger.exception("Could not read the weather store")
+        return jsonify({'success': False, 'error': str(err)}), 500
+
+    if row is None:
+        return jsonify({
+            'success': False,
+            'error': 'no readings yet',
+            'hint': 'The weather station has not posted to /ingest.',
+        }), 404
+
+    return jsonify(_serve_reading(dict(row)))
+
+
+@app.route('/api/weather/history', methods=['GET'])
+@require_token(lambda: config.READ_TOKEN)
+def api_weather_history():
+    """Recent readings — this is what replaces the SmartThings history."""
+    try:
+        hours = float(request.args.get('hours', 24))
+    except ValueError:
+        return jsonify({'success': False, 'error': 'hours must be a number'}), 400
+    hours = max(0.1, min(hours, 24 * 31))
+
+    try:
+        rows = weather_store.history(config.WEATHER_DB_PATH, hours=hours)
+    except Exception as err:
+        logger.exception("Could not read history")
+        return jsonify({'success': False, 'error': str(err)}), 500
+
+    return jsonify({
+        'hours': hours,
+        'count': len(rows),
+        'readings': [
+            {**{k: v for k, v in r.items() if k != 'recorded_at' and v is not None},
+             'recorded_at': datetime.fromtimestamp(r['recorded_at']).isoformat()}
+            for r in rows
+        ],
+    })
+
+
 @app.route('/device-status', methods=['GET'])
 def device_status():
     """Get TV device status"""
@@ -610,6 +791,13 @@ def get_config():
         'tv_app_id': config.TV_APP_ID or 'Not set',
         'ready_timeout_seconds': config.TV_READY_TIMEOUT,
         'launch_attempts': config.TV_LAUNCH_ATTEMPTS,
+        'auth': {
+            'ingest': 'token required' if config.INGEST_TOKEN else 'OPEN - set INGEST_TOKEN',
+            'read': 'token required' if config.READ_TOKEN else 'OPEN - set READ_TOKEN',
+            'launch': 'token required' if config.ACTION_TOKEN else 'open (Edge driver sends none)',
+        },
+        'weather_db': config.WEATHER_DB_PATH,
+        'retention_days': config.WEATHER_RETENTION_DAYS,
     })
 
 if __name__ == '__main__':

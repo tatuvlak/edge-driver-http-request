@@ -8,7 +8,7 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # Persist OAuth tokens across container restarts
+      # Persist the weather database (and legacy OAuth tokens) across restarts
       - /share/Container/tv-app-launcher/data:/app/data
     environment:
       # OAuth configuration (preferred method)
@@ -20,11 +20,19 @@ services:
       - TOKEN_FILE=${TOKEN_FILE:-/app/data/oauth_tokens.json}
       # PAT fallback (deprecated)
       - SMARTTHINGS_PAT=${SMARTTHINGS_PAT}
-      # Device configuration
-      - TV_DEVICE_ID_S95=${TV_DEVICE_ID_S95}
-      - TV_DEVICE_ID_M7=${TV_DEVICE_ID_M7}
-      - TV_DEVICE_ID=${TV_DEVICE_ID}
+      # Display configuration - LAN addresses, not SmartThings device IDs
+      - TV_HOST_S95=${TV_HOST_S95}
+      - TV_HOST_M7=${TV_HOST_M7}
       - TV_APP_ID=${TV_APP_ID}
+      - TV_READY_TIMEOUT=${TV_READY_TIMEOUT:-30}
+      - TV_LAUNCH_ATTEMPTS=${TV_LAUNCH_ATTEMPTS:-3}
+      # Weather data hub
+      - WEATHER_DB_PATH=${WEATHER_DB_PATH:-/app/data/weather.db}
+      - WEATHER_STALE_AFTER=${WEATHER_STALE_AFTER:-120}
+      - WEATHER_RETENTION_DAYS=${WEATHER_RETENTION_DAYS:-30}
+      - INGEST_TOKEN=${INGEST_TOKEN}
+      - READ_TOKEN=${READ_TOKEN}
+      - ACTION_TOKEN=${ACTION_TOKEN}
       # Server configuration
       - HOST=${HOST:-0.0.0.0}
       - PORT=${PORT:-5000}

@@ -37,21 +37,20 @@ sets, it must be tried only after REST fails, never before.
 | Client name | `WeatherHub` (token is bound to it — reuse verbatim) |
 | Port | 8002 |
 
-### S95 TV — Samsung S95BA 65 (QE65S95BATXXH, `22_PONTUSM_QD`) — **assumed, not verified**
+### S95 TV — Samsung S95BA 65 (QE65S95BATXXH, `22_PONTUSM_QD`) — **PASS**
 
-Reachable on 8001/8002, reports `TokenAuthSupport`, MAC `F0:70:4F:32:BF:DA` at
-192.168.18.187. Pairing failed on `ms.remote.touchDisable` (see the library
-caveat below); fixed but **not yet re-run**.
+Confirmed: local app launch works, same as the M7. Both displays behave
+identically, which is unsurprising given both are 2022 sets.
 
-We are proceeding on the assumption that it behaves like the M7 — REST launch
-works, WebSocket launch is ignored — because both are 2022 sets. That is a
-reasonable guess, not a result. The S95 is the default `target_device`, so if the
-assumption is wrong it surfaces the first time the routine runs against it. Run
-the probe when convenient:
+| Value | Setting |
+|-------|---------|
+| IP | 192.168.18.187 |
+| MAC | F0:70:4F:32:BF:DA |
+| App id | `tvweather1.tvweather` |
+| Port | 8002 |
 
-```powershell
-python tv_local_control_test.py --ip 192.168.18.187 --token-file s95-token.txt
-```
+This was the default `target_device`, so **check 1 is now fully closed** — both
+displays verified, no assumptions left in the launch path.
 
 ### RESOLVED — the REST launch needs no pairing
 

@@ -10,8 +10,9 @@ RUN mkdir -p /app/data && chmod 777 /app/data
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
-COPY app.py .
+# Copy application. Every module the service imports must be listed here — a
+# missing one only surfaces as an ImportError at container start.
+COPY app.py tv_local.py weather_store.py .
 
 # Expose port
 EXPOSE 5000
