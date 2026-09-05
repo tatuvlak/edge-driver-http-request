@@ -50,6 +50,38 @@ except Exception:
     pass
 
 
+class _NonTerminalStartupEvents:
+    """Treat any event that is not a verdict as startup chatter.
+
+    samsungtvws ships a fixed allowlist of events tolerated while opening a
+    connection (`ed.edenTV.update`, `ms.voiceApp.hide`), and raises
+    ConnectionFailure on anything else. Different Samsung models announce
+    different things first — an S95 sends `ms.remote.touchDisable` — so a
+    fixed list fails on hardware nobody happened to test.
+
+    Only two events are actually a verdict: connect and unauthorized. Anything
+    else is noise to read past. The read is bounded by the socket timeout, so
+    an unresponsive TV still errors out rather than looping forever.
+    """
+
+    TERMINAL = frozenset({"ms.channel.connect", "ms.channel.unauthorized"})
+
+    def __contains__(self, event: object) -> bool:
+        return event not in self.TERMINAL
+
+
+def _patch_startup_events() -> None:
+    try:
+        from samsungtvws import connection
+
+        connection.IGNORE_EVENTS_AT_STARTUP = _NonTerminalStartupEvents()
+    except Exception:
+        pass
+
+
+_patch_startup_events()
+
+
 DEFAULT_APP_ID = "tvweather1.tvweather"
 
 # The pairing token the TV issues is bound to this client name. Whatever you use

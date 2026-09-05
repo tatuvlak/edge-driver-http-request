@@ -37,15 +37,33 @@ sets, it must be tried only after REST fails, never before.
 | Client name | `WeatherHub` (token is bound to it — reuse verbatim) |
 | Port | 8002 |
 
-### S95 TV — **not yet tested**
+### S95 TV — Samsung S95BA 65 (QE65S95BATXXH, `22_PONTUSM_QD`) — **in progress**
 
-The default `target_device` in `app.py`, so this one has to pass before Phase 2
-can be considered de-risked. Different model and firmware generation; the M7
-result does not transfer.
+Reachable on 8001/8002, reports `TokenAuthSupport`, MAC `F0:70:4F:32:BF:DA` at
+192.168.18.187. Pairing initially failed with
+`ConnectionFailure: {'event': 'ms.remote.touchDisable'}` — see the library
+caveat below. Retest after that fix.
 
 ```powershell
-python tv_local_control_test.py --ip <S95_IP> --token-file s95-token.txt
+python tv_local_control_test.py --ip 192.168.18.187 --token-file s95-token.txt
 ```
+
+### Library caveat — carry this into Phase 2
+
+`samsungtvws` tolerates a **fixed** list of events while opening a connection
+(`IGNORE_EVENTS_AT_STARTUP = ('ed.edenTV.update', 'ms.voiceApp.hide')`) and
+raises `ConnectionFailure` on anything else. Models announce different things
+first: the S95 sends `ms.remote.touchDisable`, which is not on that list, so the
+connection is abandoned before pairing can even be offered.
+
+Only `ms.channel.connect` and `ms.channel.unauthorized` are actually verdicts;
+everything else during startup is chatter to read past. The probe patches
+`samsungtvws.connection.IGNORE_EVENTS_AT_STARTUP` to that rule, which is bounded
+by the socket timeout so an unresponsive TV still errors out.
+
+**The QNAP service needs the same patch**, or it will fail to connect to the S95
+in exactly the same way. Pin the `samsungtvws` version too — this behaviour could
+change under either an upgrade or a TV firmware update.
 
 ### Wake-on-LAN — **not yet tested**
 
