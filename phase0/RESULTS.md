@@ -113,3 +113,31 @@ Global variables use ___ bytes (__%) of dynamic memory.
 ```
 
 ## 3. Edge driver published — not yet confirmed
+
+---
+
+## Deployment status — QNAP
+
+Running as `tv-app-launcher-no-api` on `winston:5000`, deployed via Container
+Station 3.x Applications from `docker-compose.no-api.yml`. The old
+SmartThings-based container is stopped but kept as a rollback.
+
+Verified 2026-09-05:
+
+| Check | Result |
+|-------|--------|
+| Service healthy, v3.1.0, local launch method | pass |
+| `.env` reached the container; ingest and read tokens enforced | pass |
+| Container reaches the displays across the LAN | pass |
+| Sensor ingest -> read round trip, all seven fields, not stale | pass |
+| Read token rejected on `/ingest`, ingest token rejected on `/api/weather` | pass |
+| Real routine launch | pending |
+
+**Discovery proved itself on first contact.** The M7 had already moved from
+192.168.18.186 to .193, so the configured address was stale before deployment
+even finished. `/displays?rediscover=1` identified it by MAC and cached the new
+address. Without that, the launch would have failed against a config that looked
+entirely correct — which is what the lack of DHCP reservations would have cost.
+
+Networking is therefore confirmed: Container Station's bridge network reaches
+the LAN, and the NAS is on the same segment as the displays.
