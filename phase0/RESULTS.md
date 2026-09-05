@@ -53,50 +53,21 @@ the probe when convenient:
 python tv_local_control_test.py --ip 192.168.18.187 --token-file s95-token.txt
 ```
 
-### OPEN QUESTION — does the REST launch need a prior pairing?
+### RESOLVED — the REST launch needs no pairing
 
-**Unverified, and it gates the deployment.**
+Verified from a second Windows laptop that had never paired with the M7, with no
+WebSocket session open: `GET` returned an app-status payload and `POST` opened
+the weather app.
 
-Established from the samsungtvws source: `rest_app_run` is a bare
-`requests.post("https://<host>:8002/api/v2/applications/<id>", verify=False)`.
-No Authorization header, no token, no websocket involved. On that basis the
-QNAP service was written to use plain REST with no pairing and no credentials.
+So `POST https://<display>:8002/api/v2/applications/<app-id>` is genuinely
+unauthenticated on the local network. The earlier M7 result could not show this
+on its own, because the probe held an authorized WebSocket session at the time —
+leaving open the possibility that the TV granted REST access by source IP.
+It does not.
 
-But in the M7 run that proved the REST launch works, the probe **had already
-paired and held an open authorized websocket session**. So the possibility was
-never excluded that the TV grants REST access only to a source IP with an active
-session. The client sends nothing identifying, but the server could still decide
-by IP.
-
-This matters because the QNAP is a different host from the laptop that paired.
-If the TV does gate on prior pairing, the service fails there — and the test
-suite will not catch it, since the fake display implements no such policy.
-
-**Settle it from any host that has never paired** with the display — a second
-laptop is fine, it does not have to be the QNAP. Weather app closed on the M7:
-
-```bash
-# GET first: read-only, and already decisive
-curl -k https://192.168.18.186:8002/api/v2/applications/tvweather1.tvweather
-curl -k -X POST https://192.168.18.186:8002/api/v2/applications/tvweather1.tvweather
-```
-
-On Windows use `curl.exe` — PowerShell aliases bare `curl` to `Invoke-WebRequest`,
-which has no `-k` (`--insecure`, required because the TV's certificate is
-self-signed).
-
-* GET returns a status payload and POST opens the app → not gated by pairing.
-  The design is sound; close this out.
-* 401/403, or nothing happens → REST needs a session first. The service then has
-  to open the websocket before launching, which brings the startup-event patch
-  and a persisted token file back into scope (see the caveat below).
-
-The one machine that cannot answer this is the laptop the probe has been run
-from: it is now a paired client for both displays.
-
-Separately, and for network reasons rather than pairing: confirm the QNAP itself
-can reach the displays. If the NAS is on another subnet or VLAN, that is its own
-failure mode.
+**Consequence:** the QNAP service needs no pairing, no token file, no client
+name, and no WebSocket handshake — which is how `tv_local.py` is written. It
+also means the service carries no credentials of any kind for the displays.
 
 ### Library caveat — carry this into Phase 2
 
@@ -111,9 +82,10 @@ everything else during startup is chatter to read past. The probe patches
 `samsungtvws.connection.IGNORE_EVENTS_AT_STARTUP` to that rule, which is bounded
 by the socket timeout so an unresponsive TV still errors out.
 
-**The QNAP service needs the same patch**, or it will fail to connect to the S95
-in exactly the same way. Pin the `samsungtvws` version too — this behaviour could
-change under either an upgrade or a TV firmware update.
+This affects **the probe only**. The QNAP service never opens a WebSocket — it
+launches over plain REST — so it neither needs this patch nor depends on
+`samsungtvws` at all. Should a future display ever require the WebSocket path,
+this caveat comes back with it, and the library version would need pinning.
 
 ### Wake-on-LAN — **out of scope**
 
