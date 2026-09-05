@@ -2,6 +2,136 @@
 
 Since `docker-compose` isn't available on your NAS, use Container Station's built-in GUI instead.
 
+---
+
+# Rebuilding for the local-control version
+
+**Start here if you are updating an existing deployment.** This version launches
+the app over the LAN instead of the SmartThings cloud, and hosts the weather data
+the sensor pushes. Both change what the container needs.
+
+Three things differ from the original setup below:
+
+1. **More files.** The service is no longer a single `app.py`. `tv_local.py` and
+   `weather_store.py` must be uploaded too, or the container dies on
+   `ImportError` at start.
+2. **A volume is now required.** The weather database and the cache of
+   discovered display addresses live in `/app/data`. Without a volume they are
+   wiped every time the container is recreated — you lose history and the
+   service has to rescan for displays.
+3. **Different environment variables.** LAN addresses and MACs replace the
+   SmartThings device IDs, and there are API tokens.
+
+## 1. Upload the changed files
+
+File Station → `/Container/tv-app-launcher`, overwriting:
+
+- `app.py`
+- `tv_local.py`      *(new)*
+- `weather_store.py` *(new)*
+- `Dockerfile`       *(changed — copies the new modules, longer worker timeout)*
+- `requirements.txt`
+
+## 2. Create the data folder
+
+In File Station, create `/Container/tv-app-launcher/data` if it does not exist.
+This is what the volume in step 4 maps to.
+
+## 3. Rebuild the image
+
+Container Station → **Images** → **Build**
+
+- Image name `tv-app-launcher`, tag `latest`
+- Dockerfile: `/Container/tv-app-launcher/Dockerfile`
+- Build context: `/Container/tv-app-launcher`
+
+Rebuilding does **not** update a running container — it only produces a new
+image. The old container keeps running the old code until you replace it.
+
+## 4. Replace the container
+
+Container Station → **Containers** → stop and delete `tv-app-launcher`, then
+create a new one from the image you just built.
+
+Deleting the container is safe **provided step 2's volume is configured** —
+that is where the data lives. Without it, deleting discards the database.
+
+- **Network**: Bridge, port `5000` → `5000` TCP
+- **Volume**: `/Container/tv-app-launcher/data` → `/app/data`  ← easy to miss, do not
+- **Auto restart**: enabled
+
+### Environment variables
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `TV_HOST_S95` | `192.168.18.187` | last known address; a hint, not required |
+| `TV_MAC_S95` | `F0:70:4F:32:BF:DA` | the stable identity |
+| `TV_HOST_M7` | `192.168.18.186` | |
+| `TV_MAC_M7` | `54:44:A3:5C:4B:16` | |
+| `TV_APP_ID` | `tvweather1.tvweather` | |
+| `TV_SCAN_SUBNET` | *(empty)* | derived from TV_HOST_* unless set |
+| `INGEST_TOKEN` | *generate one* | the sensor writes with this |
+| `READ_TOKEN` | *generate one* | the TV and phone read with this |
+| `ACTION_TOKEN` | *(empty)* | see below |
+| `HOST` | `0.0.0.0` | |
+| `PORT` | `5000` | |
+
+Generate each token with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"` and **do not reuse
+one value for both**. The read token ships inside the app package on the TV, so
+it must not be able to forge sensor readings.
+
+**Leave `ACTION_TOKEN` empty.** The Edge driver sends no credentials, so setting
+it now breaks your routine until the driver is republished.
+
+The old `SMARTTHINGS_PAT`, `ST_CLIENT_*` and `TV_DEVICE_ID_*` variables are no
+longer read by the launch path. Leaving them set is harmless; removing them is
+tidier.
+
+## 5. Verify
+
+```bash
+curl http://localhost:5000/health      # weather.has_readings, version 3.x
+curl http://localhost:5000/displays    # both configured AND reachable
+curl http://localhost:5000/config      # ingest and read should say "token required"
+```
+
+`/displays` is the one that matters: `reachable: false` means the NAS cannot see
+that display, which is a network problem to solve before going further.
+
+If `/config` reports `OPEN - set INGEST_TOKEN`, the variables did not reach the
+container — check the container's Environment tab rather than the `.env` file,
+since Container Station passes what is set in the GUI.
+
+Then the data round trip:
+
+```bash
+curl -X POST http://localhost:5000/ingest \
+  -H "Authorization: Bearer YOUR_INGEST_TOKEN" -H "Content-Type: application/json" \
+  -d '{"temperature_c":21.4,"humidity_pct":48,"aqi":1}'
+
+curl -H "Authorization: Bearer YOUR_READ_TOKEN" http://localhost:5000/api/weather
+```
+
+Finally trigger the SmartThings routine — the display should power on and the
+weather app open, with no SmartThings API call involved.
+
+## If your Container Station has an "Applications" tab
+
+Container Station 3.x can import a compose file directly, which avoids typing
+every variable by hand: **Applications → Create**, paste the contents of
+`docker-compose.yml`, and put the values in a `.env` beside it. The compose file
+in this repo already carries the volume, ports and full variable list. The manual
+route above works on every version, which is why it is written out in full.
+
+---
+
+# Original setup (SmartThings cloud version)
+
+Kept for reference. The steps below still describe how building and creating a
+container works, but the file list, volume and variables are superseded by the
+section above.
+
 ## Step 1: Upload Files to QNAP
 
 ### Using File Station (Recommended)
