@@ -37,12 +37,21 @@ sets, it must be tried only after REST fails, never before.
 | Client name | `WeatherHub` (token is bound to it — reuse verbatim) |
 | Port | 8002 |
 
-### S95 TV — Samsung S95BA 65 (QE65S95BATXXH, `22_PONTUSM_QD`) — **in progress**
+### S95 TV — Samsung S95BA 65 (QE65S95BATXXH, `22_PONTUSM_QD`) — **assumed, not verified**
 
 Reachable on 8001/8002, reports `TokenAuthSupport`, MAC `F0:70:4F:32:BF:DA` at
-192.168.18.187. Pairing initially failed with
-`ConnectionFailure: {'event': 'ms.remote.touchDisable'}` — see the library
-caveat below. Retest after that fix.
+192.168.18.187. Pairing failed on `ms.remote.touchDisable` (see the library
+caveat below); fixed but **not yet re-run**.
+
+We are proceeding on the assumption that it behaves like the M7 — REST launch
+works, WebSocket launch is ignored — because both are 2022 sets. That is a
+reasonable guess, not a result. The S95 is the default `target_device`, so if the
+assumption is wrong it surfaces the first time the routine runs against it. Run
+the probe when convenient:
+
+```powershell
+python tv_local_control_test.py --ip 192.168.18.187 --token-file s95-token.txt
+```
 
 ```powershell
 python tv_local_control_test.py --ip 192.168.18.187 --token-file s95-token.txt
@@ -65,14 +74,24 @@ by the socket timeout so an unresponsive TV still errors out.
 in exactly the same way. Pin the `samsungtvws` version too — this behaviour could
 change under either an upgrade or a TV firmware update.
 
-### Wake-on-LAN — **not yet tested**
+### Wake-on-LAN — **out of scope**
 
-Needed on both devices: the routine has to wake the display, not just drive one
-that is already on.
+Tested on the M7 (Wi-Fi connected): does not wake. Not expected to work on the
+S95 either. This does not matter: the SmartThings routine turns the display on
+*before* triggering the launch, so the service only ever has to start an app on a
+set that is already awake — which is exactly what was tested and works.
 
-```powershell
-python tv_local_control_test.py --ip <IP> --token-file <file> --wol
-```
+Turning a TV on from a routine is ordinary SmartThings app behaviour, not a
+developer-API call, so it stays free after October 2026.
+
+**Consequence for Phase 2:** drop Wake-on-LAN from the design, but add a
+readiness wait. The TV's network stack is not up the instant the routine powers
+it on, so the launch must poll port 8002 until it answers (with a timeout) and
+retry the launch a few times rather than firing once and failing. This replaces
+WoL as the thing that makes the trigger reliable.
+
+If the assumption "the TV is always already on" ever stops holding, revisit —
+`--wol` is still in the probe.
 
 ## 2. ESP32 flash / RAM baseline — not yet recorded
 
