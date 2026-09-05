@@ -68,6 +68,17 @@ live = tv_local.Display('s95', 'S95 TV', '127.0.0.1', p_s95, S95_MAC)
 resolved, err = flaskapp.resolve_display(live)
 check("a working address is used as-is", err is None and resolved.host == "127.0.0.1")
 
+# The no-router-access case: MAC and subnet only, no address at all.
+flaskapp.config.TV_SCAN_SUBNET = "127.0.0.1"
+Path(cache).unlink()
+blind = tv_local.Display('s95', 'S95 TV', '', p_s95, S95_MAC)
+resolved, err = flaskapp.resolve_display(blind)
+check("finds a display with no address configured at all",
+      err is None and resolved.host == "127.0.0.1", (resolved.host, err))
+check("still identified by MAC, not by whatever answered",
+      json.loads(Path(cache).read_text()).get("s95") == "127.0.0.1")
+flaskapp.config.TV_SCAN_SUBNET = ""
+
 no_mac = tv_local.Display('m7', 'M7 Monitor', '127.0.0.2', p_m7, "")
 resolved, err = flaskapp.resolve_display(no_mac)
 check("without a MAC it explains why it cannot look", err and "MAC" in err, err)
