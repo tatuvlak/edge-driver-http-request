@@ -131,7 +131,22 @@ Verified 2026-09-05:
 | Container reaches the displays across the LAN | pass |
 | Sensor ingest -> read round trip, all seven fields, not stale | pass |
 | Read token rejected on `/ingest`, ingest token rejected on `/api/weather` | pass |
-| Real routine launch | pending |
+| Real routine launch | **pass** |
+
+End to end, from the logs:
+
+```
+Launch requested on M7 Monitor (m7)
+M7 Monitor: 'tvweather1.tvweather' confirmed running
+```
+
+Routine -> Edge driver -> NAS -> the display's own REST API, with no SmartThings
+API call in the chain. The TV confirmed the app was actually running rather than
+merely accepting the command. No rediscovery line, so the cached .193 answered
+straight away — the fast path, about 3.5 seconds end to end.
+
+**Paid call site 3 of 3 is eliminated.** The remaining two are the TV app and the
+phone app reading the sensor, which the data hub now serves.
 
 **Discovery proved itself on first contact.** The M7 had already moved from
 192.168.18.186 to .193, so the configured address was stale before deployment
