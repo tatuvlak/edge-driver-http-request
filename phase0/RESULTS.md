@@ -53,9 +53,39 @@ the probe when convenient:
 python tv_local_control_test.py --ip 192.168.18.187 --token-file s95-token.txt
 ```
 
-```powershell
-python tv_local_control_test.py --ip 192.168.18.187 --token-file s95-token.txt
+### OPEN QUESTION — does the REST launch need a prior pairing?
+
+**Unverified, and it gates the deployment.**
+
+Established from the samsungtvws source: `rest_app_run` is a bare
+`requests.post("https://<host>:8002/api/v2/applications/<id>", verify=False)`.
+No Authorization header, no token, no websocket involved. On that basis the
+QNAP service was written to use plain REST with no pairing and no credentials.
+
+But in the M7 run that proved the REST launch works, the probe **had already
+paired and held an open authorized websocket session**. So the possibility was
+never excluded that the TV grants REST access only to a source IP with an active
+session. The client sends nothing identifying, but the server could still decide
+by IP.
+
+This matters because the QNAP is a different host from the laptop that paired.
+If the TV does gate on prior pairing, the service fails there — and the test
+suite will not catch it, since the fake display implements no such policy.
+
+**Settle it from the QNAP** (never paired with either display), weather app
+closed on the M7:
+
+```bash
+curl -k -X POST https://192.168.18.186:8002/api/v2/applications/tvweather1.tvweather
 ```
+
+* App opens → the design is sound, close this out.
+* 401/403, or nothing happens → REST needs a session first. The service then has
+  to open the websocket before launching, which brings the startup-event patch
+  and a persisted token file back into scope (see the caveat below).
+
+Test from the QNAP specifically. The Windows machine is now a paired client for
+both displays, so a success there proves nothing about the NAS.
 
 ### Library caveat — carry this into Phase 2
 
