@@ -61,6 +61,17 @@ class Config:
     TV_HOST_S95 = os.environ.get('TV_HOST_S95', '')
     TV_HOST_M7 = os.environ.get('TV_HOST_M7', '')
 
+    # MAC addresses — the stable identity of each display. With these set, a
+    # display that moves to a new DHCP address is found again automatically;
+    # without them, a lease change breaks the launch until TV_HOST_* is edited.
+    TV_MAC_S95 = os.environ.get('TV_MAC_S95', '')
+    TV_MAC_M7 = os.environ.get('TV_MAC_M7', '')
+    # Where discovered addresses are remembered between restarts.
+    DISPLAY_CACHE_PATH = os.environ.get('DISPLAY_CACHE_PATH', '/app/data/display_ips.json')
+    # Subnet to scan when a display has moved. Defaults to the one implied by
+    # its last known address, which is right on a normal flat home network.
+    TV_SCAN_SUBNET = os.environ.get('TV_SCAN_SUBNET', '')
+
     # How long to wait for a display to answer after the routine powers it on,
     # and how many times to retry the launch itself.
     TV_READY_TIMEOUT = float(os.environ.get('TV_READY_TIMEOUT', 30))
@@ -96,11 +107,74 @@ config = Config()
 
 
 def get_displays():
-    """The displays this service can drive, keyed by the Edge driver's target_device."""
+    """The displays this service can drive, keyed by the Edge driver's target_device.
+
+    Addresses come from config, then from whatever discovery last found — the
+    cached value wins when config has gone stale, which is the usual case after
+    a DHCP lease changes.
+    """
+    cache = _load_display_cache()
     return {
-        's95': tv_local.Display(key='s95', name='S95 TV', host=config.TV_HOST_S95),
-        'm7': tv_local.Display(key='m7', name='M7 Monitor', host=config.TV_HOST_M7),
+        's95': tv_local.Display(
+            key='s95', name='S95 TV',
+            host=cache.get('s95') or config.TV_HOST_S95, mac=config.TV_MAC_S95,
+        ),
+        'm7': tv_local.Display(
+            key='m7', name='M7 Monitor',
+            host=cache.get('m7') or config.TV_HOST_M7, mac=config.TV_MAC_M7,
+        ),
     }
+
+
+def _load_display_cache():
+    try:
+        path = Path(config.DISPLAY_CACHE_PATH)
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception:
+        logger.warning("Could not read the display cache; ignoring it", exc_info=True)
+    return {}
+
+
+def _remember_display(key, host):
+    try:
+        path = Path(config.DISPLAY_CACHE_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cache = _load_display_cache()
+        cache[key] = host
+        path.write_text(json.dumps(cache, indent=2))
+        logger.info("Remembered %s at %s", key, host)
+    except Exception:
+        # Losing the cache costs a rescan next time, nothing more.
+        logger.warning("Could not write the display cache", exc_info=True)
+
+
+def resolve_display(display):
+    """Return the display at an address that answers, rediscovering if needed.
+
+    The fast path is the address we already have. Only when that stops
+    answering do we scan, and only when a MAC is configured to identify the
+    result — otherwise we could just as easily point at the neighbour's TV.
+    """
+    if display.host and tv_local.is_awake(display, timeout=1.5):
+        return display, None
+
+    if not display.mac:
+        hint = ('No MAC configured, so a moved display cannot be found again. '
+                f'Set TV_MAC_{display.key.upper()} in .env, or give it a DHCP reservation.')
+        return display, hint
+
+    subnet = config.TV_SCAN_SUBNET or display.host
+    if not subnet:
+        return display, 'No address or subnet to scan from; set TV_SCAN_SUBNET.'
+
+    logger.info("%s is not at %s any more; looking for it by MAC", display.name, display.host or '?')
+    found = tv_local.find_by_mac(display.mac, subnet, port=display.port)
+    if not found:
+        return display, f'{display.name} was not found on {subnet.rsplit(".", 1)[0]}.0/24'
+
+    _remember_display(display.key, found)
+    return display.at(found), None
 
 def _token_ok(expected):
     """Check the request's bearer token against `expected`.
@@ -430,15 +504,30 @@ def displays_status():
 
     Setup and troubleshooting aid: distinguishes 'wrong address in .env' from
     'display is off', which otherwise look the same from a failed launch.
+    Add ?rediscover=1 to hunt for anything unreachable by MAC.
     """
+    rediscover = request.args.get('rediscover') == '1'
     report = {}
     for key, display in get_displays().items():
-        report[key] = {
+        entry = {
             'name': display.name,
             'host': display.host or None,
+            'mac': display.mac or None,
             'configured': display.configured,
-            'reachable': tv_local.is_awake(display) if display.configured else False,
+            'reachable': bool(display.host) and tv_local.is_awake(display),
         }
+        if rediscover and not entry['reachable'] and display.mac:
+            resolved, err = resolve_display(display)
+            entry['rediscovered_at'] = resolved.host if not err else None
+            entry['reachable'] = not err
+            if err:
+                entry['error'] = err
+        if not display.mac:
+            entry['warning'] = (
+                f'No TV_MAC_{key.upper()} set — if this display gets a new DHCP '
+                'address, the launch will fail until .env is edited.'
+            )
+        report[key] = entry
     return jsonify({'displays': report, 'app_id': config.TV_APP_ID or None})
 
 @app.route('/oauth/authorize', methods=['GET'])
@@ -594,9 +683,19 @@ def launch_tv_app():
         if not display.configured:
             return jsonify({
                 'success': False,
-                'error': f'No address configured for {display.name}',
-                'hint': f'Set TV_HOST_{target_device.upper()} in .env',
+                'error': f'No address or MAC configured for {display.name}',
+                'hint': f'Set TV_HOST_{target_device.upper()} (and ideally TV_MAC_{target_device.upper()}) in .env',
             }), 500
+
+        # The display may have taken a new DHCP address since we last spoke to
+        # it; find it again by MAC rather than failing.
+        display, resolve_error = resolve_display(display)
+        if resolve_error:
+            return jsonify({
+                'success': False,
+                'error': f'Could not locate {display.name}',
+                'hint': resolve_error,
+            }), 502
 
         if not config.TV_APP_ID:
             return jsonify({

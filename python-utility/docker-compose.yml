@@ -23,6 +23,10 @@ services:
       # Display configuration - LAN addresses, not SmartThings device IDs
       - TV_HOST_S95=${TV_HOST_S95}
       - TV_HOST_M7=${TV_HOST_M7}
+      - TV_MAC_S95=${TV_MAC_S95}
+      - TV_MAC_M7=${TV_MAC_M7}
+      - DISPLAY_CACHE_PATH=${DISPLAY_CACHE_PATH:-/app/data/display_ips.json}
+      - TV_SCAN_SUBNET=${TV_SCAN_SUBNET}
       - TV_APP_ID=${TV_APP_ID}
       - TV_READY_TIMEOUT=${TV_READY_TIMEOUT:-30}
       - TV_LAUNCH_ATTEMPTS=${TV_LAUNCH_ATTEMPTS:-3}

@@ -29,6 +29,7 @@ from __future__ import annotations
 import logging
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import requests
@@ -46,16 +47,88 @@ REQUEST_TIMEOUT = 8
 
 @dataclass(frozen=True)
 class Display:
-    """One controllable display."""
+    """One controllable display.
+
+    `host` is the last known address and `mac` is the stable identity. Displays
+    get their addresses by DHCP, so an address that worked yesterday may belong
+    to something else today — the MAC is what actually says which set this is.
+    """
 
     key: str  # 's95' | 'm7' — matches the Edge driver's target_device
     name: str  # human-readable, for logs and API responses
-    host: str  # IP address or hostname on the LAN
+    host: str  # IP address or hostname on the LAN — last known, may be stale
     port: int = TV_REST_PORT
+    mac: str = ""  # optional but strongly recommended: survives DHCP changes
 
     @property
     def configured(self) -> bool:
-        return bool(self.host)
+        return bool(self.host or self.mac)
+
+    def at(self, host: str) -> "Display":
+        """The same display, at a different address."""
+        return Display(key=self.key, name=self.name, host=host, port=self.port, mac=self.mac)
+
+
+def normalise_mac(mac: str) -> str:
+    """Compare MACs without caring about case or separator."""
+    return mac.lower().replace("-", "").replace(":", "").strip()
+
+
+def device_info(host: str, port: int = TV_REST_PORT, timeout: float = 3.0) -> dict | None:
+    """Read a Samsung display's unauthenticated /api/v2/ identity block."""
+    try:
+        response = requests.get(
+            f"https://{host}:{port}/api/v2/", timeout=timeout, verify=False
+        )
+        if response.ok:
+            return response.json().get("device", {})
+    except (requests.RequestException, ValueError):
+        pass
+    return None
+
+
+def find_by_mac(
+    mac: str,
+    subnet: str,
+    port: int = TV_REST_PORT,
+    connect_timeout: float = 1.0,
+    workers: int = 64,
+) -> str | None:
+    """Scan a /24 for the display with this MAC. Returns its address, or None.
+
+    Two stages, because a full identity fetch against 254 addresses would be
+    slow: first a parallel TCP probe to find the handful of hosts with the API
+    port open, then ask only those who they are. Identification is by MAC rather
+    than by "something answered", so this cannot pick the wrong display.
+    """
+    wanted = normalise_mac(mac)
+    if not wanted:
+        return None
+
+    prefix = subnet.rsplit(".", 1)[0]
+    candidates = [f"{prefix}.{n}" for n in range(1, 255)]
+
+    def port_open(host: str) -> str | None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(connect_timeout)
+        try:
+            return host if sock.connect_ex((host, port)) == 0 else None
+        except OSError:
+            return None
+        finally:
+            sock.close()
+
+    logger.info("Scanning %s.0/24 for MAC %s", prefix, mac)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        listening = [h for h in pool.map(port_open, candidates) if h]
+
+    logger.info("%d host(s) answering on port %d", len(listening), port)
+    for host in listening:
+        info = device_info(host, port)
+        if info and normalise_mac(info.get("wifiMac", "")) == wanted:
+            logger.info("Found %s at %s (%s)", mac, host, info.get("name", "?"))
+            return host
+    return None
 
 
 def _api_url(display: Display, route: str) -> str:
