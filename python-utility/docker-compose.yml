@@ -1,3 +1,18 @@
+# Container Station 3.x: Applications -> Create -> paste this file.
+# Older Container Station: Images -> Build, then create the container by hand
+# (see ../DEPLOYMENT_QNAP_CONTAINER_STATION.md).
+#
+# Configuration comes from /share/Container/tv-app-launcher/.env, by absolute
+# path so it is found wherever Container Station copies this file to.
+#
+# There is deliberately no `environment:` block. Container Station copies the
+# compose file to a temporary directory, so ${VAR} interpolation — which reads
+# the .env sitting next to the compose file — would resolve to empty strings.
+# Since `environment:` takes precedence over `env_file:`, those empty values
+# would then override the real ones and the service would start with nothing
+# configured, while the .env file still looked correct. Defaults live in
+# app.py's Config class, so nothing is lost by leaving them out here.
+
 services:
   tv-app-launcher:
     build:
@@ -8,39 +23,10 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # Persist the weather database (and legacy OAuth tokens) across restarts
+      # The weather database and the cache of discovered display addresses live
+      # here. Without this volume both are discarded whenever the container is
+      # recreated.
       - /share/Container/tv-app-launcher/data:/app/data
-    environment:
-      # OAuth configuration (preferred method)
-      - ST_CLIENT_ID=${ST_CLIENT_ID}
-      - ST_CLIENT_SECRET=${ST_CLIENT_SECRET}
-      - ST_REFRESH_TOKEN=${ST_REFRESH_TOKEN}
-      # External callback URL (GitHub Pages) - service runs on local NAS
-      - OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI:-https://tatuvlak.github.io/tv-weather-oauth/callback.html}
-      - TOKEN_FILE=${TOKEN_FILE:-/app/data/oauth_tokens.json}
-      # PAT fallback (deprecated)
-      - SMARTTHINGS_PAT=${SMARTTHINGS_PAT}
-      # Display configuration - LAN addresses, not SmartThings device IDs
-      - TV_HOST_S95=${TV_HOST_S95}
-      - TV_HOST_M7=${TV_HOST_M7}
-      - TV_MAC_S95=${TV_MAC_S95}
-      - TV_MAC_M7=${TV_MAC_M7}
-      - DISPLAY_CACHE_PATH=${DISPLAY_CACHE_PATH:-/app/data/display_ips.json}
-      - TV_SCAN_SUBNET=${TV_SCAN_SUBNET}
-      - TV_APP_ID=${TV_APP_ID}
-      - TV_READY_TIMEOUT=${TV_READY_TIMEOUT:-30}
-      - TV_LAUNCH_ATTEMPTS=${TV_LAUNCH_ATTEMPTS:-3}
-      # Weather data hub
-      - WEATHER_DB_PATH=${WEATHER_DB_PATH:-/app/data/weather.db}
-      - WEATHER_STALE_AFTER=${WEATHER_STALE_AFTER:-120}
-      - WEATHER_RETENTION_DAYS=${WEATHER_RETENTION_DAYS:-30}
-      - INGEST_TOKEN=${INGEST_TOKEN}
-      - READ_TOKEN=${READ_TOKEN}
-      - ACTION_TOKEN=${ACTION_TOKEN}
-      # Server configuration
-      - HOST=${HOST:-0.0.0.0}
-      - PORT=${PORT:-5000}
-      - SECRET_KEY=${SECRET_KEY}
     env_file:
       - /share/Container/tv-app-launcher/.env
     networks:
