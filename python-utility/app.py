@@ -522,6 +522,11 @@ def displays_status():
             entry['reachable'] = not err
             if err:
                 entry['error'] = err
+            else:
+                # Report where it actually is, not the stale address we started
+                # from — otherwise the same payload shows two different hosts.
+                entry['configured_host'] = entry['host']
+                entry['host'] = resolved.host
         if not display.mac:
             entry['warning'] = (
                 f'No TV_MAC_{key.upper()} set — if this display gets a new DHCP '
