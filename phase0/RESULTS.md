@@ -72,20 +72,31 @@ This matters because the QNAP is a different host from the laptop that paired.
 If the TV does gate on prior pairing, the service fails there — and the test
 suite will not catch it, since the fake display implements no such policy.
 
-**Settle it from the QNAP** (never paired with either display), weather app
-closed on the M7:
+**Settle it from any host that has never paired** with the display — a second
+laptop is fine, it does not have to be the QNAP. Weather app closed on the M7:
 
 ```bash
+# GET first: read-only, and already decisive
+curl -k https://192.168.18.186:8002/api/v2/applications/tvweather1.tvweather
 curl -k -X POST https://192.168.18.186:8002/api/v2/applications/tvweather1.tvweather
 ```
 
-* App opens → the design is sound, close this out.
+On Windows use `curl.exe` — PowerShell aliases bare `curl` to `Invoke-WebRequest`,
+which has no `-k` (`--insecure`, required because the TV's certificate is
+self-signed).
+
+* GET returns a status payload and POST opens the app → not gated by pairing.
+  The design is sound; close this out.
 * 401/403, or nothing happens → REST needs a session first. The service then has
   to open the websocket before launching, which brings the startup-event patch
   and a persisted token file back into scope (see the caveat below).
 
-Test from the QNAP specifically. The Windows machine is now a paired client for
-both displays, so a success there proves nothing about the NAS.
+The one machine that cannot answer this is the laptop the probe has been run
+from: it is now a paired client for both displays.
+
+Separately, and for network reasons rather than pairing: confirm the QNAP itself
+can reach the displays. If the NAS is on another subnet or VLAN, that is its own
+failure mode.
 
 ### Library caveat — carry this into Phase 2
 
