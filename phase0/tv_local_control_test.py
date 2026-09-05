@@ -32,6 +32,7 @@ from typing import Any, Callable
 try:
     from samsungtvws import SamsungTVWS
     from samsungtvws.exceptions import ConnectionFailure, HttpApiError, UnauthorizedError
+    from websocket import WebSocketTimeoutException
 except ImportError:
     sys.exit("Missing dependency. Run:  pip install -r requirements-phase0.txt")
 
@@ -88,6 +89,11 @@ DEFAULT_APP_ID = "tvweather1.tvweather"
 # here must be reused verbatim by the QNAP service in Phase 2, or the TV will
 # treat it as a new client and pop the "allow?" prompt again.
 CLIENT_NAME = "WeatherHub"
+
+# How long to hold the connection open waiting for someone to accept the
+# on-screen prompt. The TV sends nothing during that wait, so this doubles as
+# the socket timeout for the pairing step.
+PAIRING_TIMEOUT = 90.0
 
 PASS, FAIL, WARN, SKIP = "[PASS]", "[FAIL]", "[WARN]", "[SKIP]"
 
@@ -214,26 +220,37 @@ def probe_pairing(ip: str, token_file: Path, token_auth: bool) -> SamsungTVWS | 
 
     if not token_file.exists():
         print(
-            f"  Connecting as \"{CLIENT_NAME}\". If this is the first run, the TV will\n"
-            "  show an on-screen prompt — accept it with the remote within 30 seconds.\n"
+            f"  Connecting as \"{CLIENT_NAME}\". The TV should show an on-screen prompt.\n"
+            f"  Accept it with the remote — you have {PAIRING_TIMEOUT:.0f} seconds, and this will\n"
+            "  sit here waiting until you do.\n"
         )
 
+    # Once the connection is open, the TV says nothing more until someone answers
+    # the prompt, so this socket timeout IS the pairing window. Keep it generous:
+    # finding the remote and pressing the right button takes longer than it sounds.
     tv = SamsungTVWS(
         host=ip,
         port=port,
         token_file=str(token_file),
         name=CLIENT_NAME,
-        timeout=30,
+        timeout=PAIRING_TIMEOUT,
     )
 
     try:
         tv.open()
     except UnauthorizedError:
-        record("WebSocket pairing", FAIL, "TV refused authorisation (prompt declined or timed out)")
+        record("WebSocket pairing", FAIL, "prompt was declined")
         print(
-            "\n  Re-run and accept the prompt. If no prompt appeared at all, check\n"
+            "\n  Re-run and accept it. If the prompt did not appear at all, check\n"
             "  Settings > General > External Device Manager > Device Connect Manager\n"
             "  and clear any stale entry for this client name."
+        )
+        return None
+    except WebSocketTimeoutException:
+        record("WebSocket pairing", FAIL, f"no answer within {PAIRING_TIMEOUT:.0f}s")
+        print(
+            "\n  The prompt was almost certainly on screen and went unanswered.\n"
+            "  Re-run with the remote already in hand."
         )
         return None
     except (ConnectionFailure, OSError) as err:
