@@ -105,12 +105,26 @@ WoL as the thing that makes the trigger reliable.
 If the assumption "the TV is always already on" ever stops holding, revisit —
 `--wol` is still in the probe.
 
-## 2. ESP32 flash / RAM baseline — not yet recorded
+## 2. ESP32 flash / RAM baseline — **recorded**
+
+Arduino IDE, ESP32 core 3.3.12, with the hub push included:
 
 ```
-Sketch uses ___ bytes (__%) of program storage space.
-Global variables use ___ bytes (__%) of dynamic memory.
+Sketch uses 2768838 bytes (88%) of program storage space. Maximum is 3145728 bytes.
+Global variables use 140416 bytes (42%) of dynamic memory, leaving 187264 bytes
+for local variables. Maximum is 327680 bytes.
 ```
+
+RAM is comfortable. **Flash is not: 88% of the default partition leaves about
+377 KB.** Matter plus WiFi plus HTTPClient is most of that, and the hub push
+added little, but anything substantial from here — OTA, TLS to the hub, a
+second radio stack — will not fit without changing the partition scheme. Check
+this number after any dependency change.
+
+The core upgrade from 3.3.5 to 3.3.12 broke the build: `pressure_measurement`
+config fields dropped their `pressure_` prefix. Fixed in weather-station#3.
+A core upgrade also wipes `libraries/Matter/src/MatterEndpoints/`, so the two
+`MatterWeatherStation` files have to be copied in again every time.
 
 ## 3. Edge driver published — not yet confirmed
 
