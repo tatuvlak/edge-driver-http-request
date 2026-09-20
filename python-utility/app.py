@@ -88,7 +88,11 @@ class Config:
     WEATHER_DB_PATH = os.environ.get('WEATHER_DB_PATH', '/app/data/weather.db')
     # A reading older than this is served with stale=true so the displays can
     # say so rather than quietly showing an hour-old number as if it were now.
-    WEATHER_STALE_AFTER = float(os.environ.get('WEATHER_STALE_AFTER', 120))
+    # The default is sized for the station's shipped cycle — 300s of deep sleep
+    # plus ~70s awake, so a reading roughly every 370s — with room for one
+    # missed cycle. The old 120 predates deep sleep and marked every reading
+    # stale. Raise this if you lengthen SENSOR_SLEEP_SECONDS on the sensor.
+    WEATHER_STALE_AFTER = float(os.environ.get('WEATHER_STALE_AFTER', 800))
     WEATHER_RETENTION_DAYS = float(os.environ.get('WEATHER_RETENTION_DAYS', 30))
 
     # Three separate tokens, because these have very different blast radii.
@@ -901,6 +905,7 @@ def get_config():
             'launch': 'token required' if config.ACTION_TOKEN else 'open (Edge driver sends none)',
         },
         'weather_db': config.WEATHER_DB_PATH,
+        'stale_after_seconds': config.WEATHER_STALE_AFTER,
         'retention_days': config.WEATHER_RETENTION_DAYS,
     })
 
