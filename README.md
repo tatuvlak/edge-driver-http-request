@@ -1,322 +1,86 @@
-# TV App Launcher - SmartThings Integration
+# TV App Launcher — weather ecosystem, without the SmartThings API
 
-This project enables launching a Samsung TV app through SmartThings routines using:
-1. **SmartThings Edge Driver** - Runs on SmartThings Hub
-2. **Python Utility** - Runs as Docker container on QNAP NAS
+Launches a Samsung Tizen weather app on a TV from a SmartThings routine, and
+hosts the weather station's readings for that app to display — using no
+SmartThings cloud API at all.
 
-## Architecture
+The SmartThings developer API becomes a paid subscription in October 2026.
+Matter commissioning, hub-local Edge drivers and the SmartThings app itself are
+product features and are unaffected; it is the `api.smartthings.com/v1` calls
+that a hobby project has to design out. This repo is the part of that work that
+runs on the hub and on the NAS.
+
+## How a launch happens
 
 ```
-SmartThings Routine
-    ↓
-Edge Driver (Hub)
-    ↓ HTTP Request
-Python Utility (QNAP NAS)
-    ↓ SmartThings API
-Samsung TV → Launches Weather App
+SmartThings routine
+  (turns the TV on, then flips a virtual switch)
+        │
+        ▼
+Edge driver on the hub          ← a routine cannot make an HTTP call, only
+  POST /launch-tv-app             operate a device, so the driver is a switch
+        │                         whose "on" means "make this request"
+        ▼
+Python service on the QNAP
+  POST https://<display>:8002/api/v2/applications/<app-id>
+        │
+        ▼
+The TV opens the weather app
 ```
 
-## Prerequisites
-
-### For Edge Driver
-- SmartThings Hub (v2 or v3)
-- SmartThings CLI installed ([Installation Guide](https://github.com/SmartThingsCommunity/smartthings-cli))
-- SmartThings account
-
-### For Python Utility
-- QNAP NAS with Container Station
-- Docker and Docker Compose
-- SmartThings Personal Access Token (for testing) or OAuth credentials
-- Network connectivity between SmartThings Hub and QNAP NAS
-
-## Setup Instructions
-
-### Part 1: Python Utility on QNAP NAS
-
-#### 1. Get Required Information
-
-**SmartThings Personal Access Token:**
-1. Go to https://account.smartthings.com/tokens
-2. Create new token with these scopes:
-   - `r:devices:*`
-   - `x:devices:*`
-3. Copy the token - you'll need it in the next step
-
-**TV Device ID:**
-```bash
-# Using SmartThings CLI
-smartthings devices --token=YOUR_PAT
-
-# Or via API
-curl -H "Authorization: Bearer YOUR_PAT" \
-  https://api.smartthings.com/v1/devices
-```
-
-**TV App ID:**
-- This is your Tizen app ID (e.g., `com.yourcompany.weatherapp`)
-- Found in your app's `config.xml` or Tizen Studio
-
-#### 2. Deploy on QNAP NAS
-
-1. Copy the `python-utility` folder to your QNAP NAS:
-   ```bash
-   # Example using SCP
-   scp -r python-utility admin@YOUR_NAS_IP:/share/Container/tv-app-launcher
-   ```
-
-2. SSH into your QNAP NAS:
-   ```bash
-   ssh admin@YOUR_NAS_IP
-   cd /share/Container/tv-app-launcher
-   ```
-
-3. Create `.env` file:
-   ```bash
-   cp .env.example .env
-   nano .env
-   ```
-
-   **QNAP Container Station note:** when importing the compose file, Container Station copies it to a temporary location. The `env_file: .env` entry expects the `.env` file to be in the same folder as the compose file. Ensure the `.env` file exists in the same directory you import, or change `env_file` to an absolute path on your NAS (e.g., `/share/Container/tv-app-launcher/.env`).
-
-4. Edit `.env` with your values:
-   ```env
-   SMARTTHINGS_PAT=your-actual-pat-token
-   TV_DEVICE_ID=your-tv-device-id
-   TV_APP_ID=your-weather-app-id
-   HOST=0.0.0.0
-   PORT=5000
-   ```
-
-5. Build and run the container:
-   ```bash
-   docker-compose up -d
-   ```
-
-6. Check if it's running:
-   ```bash
-   docker-compose ps
-   docker-compose logs -f
-   ```
-
-7. Test the health endpoint:
-   ```bash
-   curl http://localhost:5000/health
-   ```
-
-8. Test launching the app:
-   ```bash
-   curl -X POST http://localhost:5000/launch-tv-app \
-     -H "Content-Type: application/json" \
-     -d '{"action": "launch"}'
-   ```
-
-#### 3. Find Your NAS IP Address
-
-You'll need this for the Edge Driver configuration:
-```bash
-ip addr show
-# or
-ifconfig
-```
-
-Look for your local network IP (usually 192.168.x.x or 10.0.x.x)
-
-### Part 2: SmartThings Edge Driver
-
-#### 1. Install SmartThings CLI
-
-Windows PowerShell:
-```powershell
-npm install -g @smartthings/cli
-```
-
-#### 2. Login to SmartThings
-
-```bash
-smartthings login
-```
-
-Follow the prompts to authenticate.
-
-#### 3. Package and Upload the Edge Driver
-
-Navigate to the edge-driver folder:
-```bash
-cd edge-driver
-```
-
-Create a channel (first time only):
-```bash
-smartthings edge:channels:create
-```
-
-Note the channel ID from the output.
-
-Package and upload:
-```bash
-# Package the driver
-smartthings edge:drivers:package .
-
-# Upload to your channel
-smartthings edge:drivers:publish --channel=YOUR_CHANNEL_ID
-```
-
-#### 4. Install Driver on Hub
-
-```bash
-# Subscribe to your channel
-smartthings edge:channels:assign --channel=YOUR_CHANNEL_ID
-
-# Or use the SmartThings app:
-# 1. Open SmartThings app
-# 2. Go to Settings → Hub → Driver
-# 3. Add channel using the channel ID
-```
-
-#### 5. Add Virtual Device
-
-**Via SmartThings App:**
-1. Open SmartThings app
-2. Tap "+" → "Add Device"
-3. Tap "Scan for nearby devices"
-4. Wait for "TV App Launcher" to appear
-5. Tap to add it
-
-**Via CLI:**
-```bash
-smartthings devices:create
-```
-
-#### 6. Configure the Device
-
-1. In SmartThings app, go to the "TV App Launcher" device
-2. Tap the three dots (⋮) → "Settings"
-3. Enter your QNAP NAS server URL: `http://192.168.1.100:5000` (use your actual NAS IP)
-4. Save
-
-### Part 3: Testing
-
-#### Test the Edge Driver
-
-1. Open SmartThings app
-2. Go to "TV App Launcher" device
-3. Tap the switch to turn it ON
-4. Your TV should turn on and launch the weather app
-
-#### Check Logs
-
-**Python Utility:**
-```bash
-# On QNAP NAS
-docker-compose logs -f
-```
-
-**Edge Driver:**
-```bash
-smartthings edge:drivers:logcat
-```
-
-### Part 4: Use in Routines
-
-1. Open SmartThings app
-2. Go to "Routines"
-3. Create a new routine
-4. Add action: "Control devices"
-5. Select "TV App Launcher"
-6. Choose "Turn on"
-7. Save routine
-
-Now you can trigger this routine to launch your TV app!
-
-## Troubleshooting
-
-### Python Utility Issues
-
-**Container won't start:**
-```bash
-docker-compose logs
-# Check for missing environment variables
-```
-
-**Can't reach utility from Edge Driver:**
-- Verify firewall allows port 5000
-- Check NAS IP address is correct
-- Test from another device: `curl http://NAS_IP:5000/health`
-
-**SmartThings API errors:**
-- Verify PAT token is valid and has correct scopes
-- Check TV_DEVICE_ID is correct
-- Ensure TV is on the network
-
-### Edge Driver Issues
-
-**Device won't pair:**
-- Restart SmartThings Hub
-- Check driver is installed: `smartthings edge:drivers:installed`
-- Check hub logs
-
-**HTTP request fails:**
-- Check server URL in device settings
-- Ensure NAS is reachable from hub
-- Check NAS firewall settings
-
-## Upgrading to OAuth (Future)
-
-When ready to switch from PAT to OAuth:
-
-1. Register SmartThings app at https://smartthings.developer.samsung.com/
-2. Get OAuth credentials (client ID, secret)
-3. Implement OAuth flow from your TV app code
-4. Update `.env` with OAuth credentials
-5. In `app.py`, change `SmartThingsAPI(use_oauth=True)`
-
-The OAuth refresh logic is already implemented in the utility.
-
-## File Structure
+Nothing in that chain touches SmartThings' cloud. The display's own REST API is
+unauthenticated on the LAN — verified from a machine that had never paired with
+it — so the service holds no credentials for the TVs at all.
+
+## How the data gets there
 
 ```
-edge-driver-http-request/
-├── edge-driver/              # SmartThings Edge Driver
-│   ├── src/
-│   │   └── init.lua         # Main driver code
-│   ├── config/
-│   │   ├── config.yml       # Driver configuration
-│   │   └── fingerprints.yml # Device fingerprints
-│   └── profiles/
-│       └── tv-app-launcher-profile.yml
-│
-└── python-utility/           # Python service for QNAP
-    ├── app.py               # Flask application
-    ├── requirements.txt     # Python dependencies
-    ├── Dockerfile           # Docker image
-    ├── docker-compose.yml   # Docker Compose config
-    ├── .env.example         # Environment template
-    └── .gitignore
+ESP32-C6 weather station
+  ├── Matter over Wi-Fi ──────────►  SmartThings app (unchanged, still free)
+  └── POST /ingest ──────────────►  this service ──► GET /api/weather
+                                                       │
+                                            the TV app and the phone app
 ```
 
-## API Endpoints
+The station keeps its Matter endpoint, so its tile in the SmartThings app works
+exactly as before. The second output is what replaces reading the sensor back
+out of the cloud.
 
-### Python Utility
+## Repository layout
 
-- `GET /health` - Health check
-- `POST /launch-tv-app` - Launch TV app (called by Edge Driver)
-- `GET /device-status` - Get TV device status
-- `GET /config` - Get current configuration
+| Path | What it is |
+|---|---|
+| `edge-driver/` | The Edge driver (Lua). Runs on the hub. |
+| `python-utility/` | The Flask service. Runs on the QNAP in Container Station. |
+| `phase0/` | The probe that established local TV control works, and its results. |
+| `scripts/` | Small manual test helpers. |
 
-## Security Notes
+## Documentation
 
-- Keep your `.env` file secure - never commit it to version control
-- Use OAuth for production instead of PAT
-- Consider using HTTPS if exposing outside local network
-- Restrict network access to the utility to your local network only
+| Document | For |
+|---|---|
+| [`DEPLOYMENT_QNAP_CONTAINER_STATION.md`](DEPLOYMENT_QNAP_CONTAINER_STATION.md) | Deploying the service. This is the path that has actually been followed successfully. |
+| [`DEPLOYMENT_EDGE_DRIVER.md`](DEPLOYMENT_EDGE_DRIVER.md) | Packaging, publishing and installing the driver. |
+| [`python-utility/README.md`](python-utility/README.md) | The service: endpoints, tokens, configuration. |
+| [`phase0/RESULTS.md`](phase0/RESULTS.md) | What was measured on the real hardware, and what is still assumed. |
 
-## Support
+## Two things worth knowing before you change anything
 
-For issues related to:
-- **SmartThings Edge Drivers**: https://community.smartthings.com/
-- **SmartThings API**: https://developer.smartthings.com/
-- **QNAP Container Station**: QNAP support forums
+**Publishing the Edge driver uses the developer API.** The driver runs on the
+hub and keeps working regardless — it is the ability to *change* it that may
+stop being free. Anything it might ever need should go in before October 2026,
+which is why it already carries an optional bearer-token preference it does not
+currently use.
 
-## License
+**There are no DHCP reservations on this network.** Displays are identified by
+MAC, not by address: the configured address is a hint, and when it stops
+answering the service scans the subnet and caches where the display actually is.
+This is not belt-and-braces — the M7 had already moved before the first
+deployment finished.
 
-This project is for personal use. Ensure compliance with SmartThings and Samsung terms of service.
+## State
+
+The TV launch no longer uses the SmartThings API, and the service hosts the
+sensor's readings. Remaining work lives in the other repositories: the Tizen app
+and the Android app reading from this service instead of the cloud, and retiring
+the OAuth service that existed only to reach it.

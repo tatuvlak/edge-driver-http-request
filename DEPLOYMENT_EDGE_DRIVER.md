@@ -1,6 +1,15 @@
 # Edge Driver Installation Guide
 
-Complete guide to install the TV App Launcher Edge Driver on your SmartThings Hub.
+The driver is a virtual switch. A SmartThings routine cannot make an HTTP call
+— it can only operate a device — so the driver presents itself as a switch
+whose "on" means "POST to the weather service on the NAS, which opens the app
+on the TV".
+
+**Publishing goes through the SmartThings developer API, which becomes a paid
+subscription in October 2026.** The driver itself runs on the hub and keeps
+working regardless; it is the ability to *change* it that expires. Treat every
+publish as possibly the last one, and put in anything the driver might ever
+need rather than waiting until it is wanted.
 
 ## Prerequisites
 
@@ -160,19 +169,38 @@ If it doesn't appear after 5 minutes:
 
 ## Step 10: Configure the Device
 
-The device needs to know the URL of your Python utility on QNAP.
-
 1. Open **SmartThings app**
 2. Go to **Devices** → **TV App Launcher**
 3. Tap **⋮** (three dots) → **Settings**
-4. Find **Server URL** setting
-5. Enter: `http://YOUR_QNAP_IP:5000`
-   - Example: `http://192.168.1.100:5000`
-6. Tap **Save**
 
-**To find your QNAP IP:**
-- QNAP Control Panel → Network & File Services → Network → TCP/IP
-- Or via SSH: `ip addr show`
+| Preference | Set it to |
+|---|---|
+| **Server URL** | `http://<NAS address>:5000`, e.g. `http://192.168.18.250:5000` |
+| **Target device** | Which display to launch on — S95 TV or M7 Monitor |
+| **Action token** | Leave **blank** unless `ACTION_TOKEN` is set on the server. See below. |
+
+**An existing device keeps the preferences it already had.** Changing a default
+in the profile only affects a device added afterwards, so check these after
+every update rather than assuming a new default applied.
+
+**To find your QNAP address:** Control Panel → Network & File Services →
+Network & Virtual Switch → TCP/IP. Give it a static address there if you can —
+the NAS setting its own address needs no router access, and it saves both this
+preference and the sensor's firmware from chasing DHCP.
+
+### About the action token
+
+`POST /launch-tv-app` is currently unauthenticated: the server's `ACTION_TOKEN`
+is empty and this preference is blank, so anyone on the LAN can open an app on
+the TV. That is a small risk while the service is LAN-only.
+
+It stops being LAN-only when remote access arrives. The driver already sends
+`Authorization: Bearer <token>` whenever this preference is non-empty, purely so
+that switching it on later does **not** require republishing — which may no
+longer be free. To enable it: set `ACTION_TOKEN` in the server's `.env`,
+recreate the container, then paste the same value here. Set one without the
+other and the launch fails with HTTP 401 or 403, which the driver log spells
+out.
 
 ## Step 11: Test the Device
 
@@ -215,21 +243,29 @@ smartthings edge:drivers:logcat
 
 ## Updating the Driver
 
-When you make changes to the driver code:
+From the repository root, with `main` checked out and pulled:
 
-1. Package and upload again:
-   ```powershell
-   smartthings edge:drivers:package .
-   ```
+```powershell
+smartthings edge:drivers:package edge-driver/
+smartthings edge:channels:assign
+smartthings edge:drivers:install
+```
 
-2. Assign the new version to your channel:
-   ```powershell
-   smartthings edge:channels:assign
-   ```
-   Select the new version when prompted.
+`channels:assign` is the step that actually publishes the new version; pick it
+when prompted. The hub picks it up within a few minutes.
 
-3. The hub will automatically update (may take a few minutes)
-4. Or restart the hub to force update
+Confirm which version is running rather than assuming:
+
+```powershell
+smartthings edge:drivers:logcat --hub-address=<hub IP>
+```
+
+The driver logs its version on startup, e.g. `TV App Launcher Edge Driver v1.1
+Started`. If you see the previous version, the hub has not swapped yet.
+
+Then fire the routine once and watch the same log. A working launch reaches the
+service, which confirms the app is actually running on the display rather than
+merely accepting the command.
 
 ## Useful Commands
 
@@ -256,10 +292,12 @@ smartthings edge:drivers:uninstall
 ## Next Steps
 
 After installing the Edge Driver:
-1. ✅ Install Edge Driver (this guide)
-2. ⏭️ Deploy Python utility to QNAP (see DEPLOYMENT_QNAP.md)
-3. ⏭️ Test the integration
-4. ⏭️ Create SmartThings routines
+
+1. Deploy the service — see
+   [`DEPLOYMENT_QNAP_CONTAINER_STATION.md`](DEPLOYMENT_QNAP_CONTAINER_STATION.md)
+2. Set the device preferences (Step 10)
+3. Build a routine: turn the display on, then turn this switch on. The switch
+   returns to off by itself after two seconds, so it can be triggered again.
 
 ---
 
