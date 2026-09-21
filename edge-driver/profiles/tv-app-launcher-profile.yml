@@ -11,14 +11,14 @@ components:
 preferences:
   - name: serverUrl
     title: "Server URL"
-    description: "Base URL of the Python utility (e.g., http://192.168.1.100:5000)"
+    description: "Base URL of the Python utility (e.g., http://192.168.18.250:5000)"
     required: true
     preferenceType: string
     definition:
       stringType: text
       minLength: 1
       maxLength: 255
-      default: "http://192.168.1.100:5000"
+      default: "http://192.168.18.250:5000"
   - name: targetDevice
     title: "Target device"
     description: "Which device to launch the app on"
@@ -29,3 +29,13 @@ preferences:
         s95: "S95 TV"
         m7: "M7 Monitor"
       default: "s95"
+  - name: actionToken
+    title: "Action token"
+    description: "Optional. Must match ACTION_TOKEN on the server. Leave blank while that is empty."
+    required: false
+    preferenceType: string
+    definition:
+      stringType: password
+      minLength: 0
+      maxLength: 255
+      default: ""

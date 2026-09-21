@@ -1,0 +1,172 @@
+# Phase 0 results
+
+Findings that Phase 2 depends on. Update this file as the remaining checks land.
+
+## 1. Local TV control
+
+### M7 — 32" Smart Monitor (LS32BM700UPXEN, `22_NIKEL_SMT`) — **PASS**
+
+Tested 2026-09. Local app launch works, but **only via REST**.
+
+| Mechanism | Result |
+|-----------|--------|
+| WebSocket `run_app` `DEEP_LINK` (`ed.apps.launch`) | accepted, ignored |
+| WebSocket `run_app` `NATIVE_LAUNCH` | accepted, ignored |
+| **REST `POST /api/v2/applications/{app_id}`** (`rest_app_run`) | **works** |
+
+Also established:
+
+- Pairing on port 8002 succeeds; token persisted and reusable.
+- Key input works — `KEY_HOME` visibly moves the UI.
+- `rest_app_status('tvweather1.tvweather')` returns a real payload, so the app
+  id is correct as packaged and the REST app endpoints are live.
+- `app_list()` (`ed.installedApp.get`) never answers on this firmware. Expected;
+  do not depend on it anywhere.
+
+**Implication for Phase 2:** use `rest_app_run()` as the primary launch call, not
+`run_app()`. The WebSocket launch verb is dead on 2022+ firmware and fails
+*silently* — it returns cleanly having done nothing, so it cannot be used as a
+fallback that detects its own failure. If a WebSocket fallback is kept for older
+sets, it must be tried only after REST fails, never before.
+
+| Value | Setting |
+|-------|---------|
+| IP | 192.168.18.186 |
+| MAC | 54:44:A3:5C:4B:16 |
+| App id | `tvweather1.tvweather` |
+| Client name | `WeatherHub` (token is bound to it — reuse verbatim) |
+| Port | 8002 |
+
+### S95 TV — Samsung S95BA 65 (QE65S95BATXXH, `22_PONTUSM_QD`) — **PASS**
+
+Confirmed: local app launch works, same as the M7. Both displays behave
+identically, which is unsurprising given both are 2022 sets.
+
+| Value | Setting |
+|-------|---------|
+| IP | 192.168.18.187 |
+| MAC | F0:70:4F:32:BF:DA |
+| App id | `tvweather1.tvweather` |
+| Port | 8002 |
+
+This was the default `target_device`, so **check 1 is now fully closed** — both
+displays verified, no assumptions left in the launch path.
+
+### RESOLVED — the REST launch needs no pairing
+
+Verified from a second Windows laptop that had never paired with the M7, with no
+WebSocket session open: `GET` returned an app-status payload and `POST` opened
+the weather app.
+
+So `POST https://<display>:8002/api/v2/applications/<app-id>` is genuinely
+unauthenticated on the local network. The earlier M7 result could not show this
+on its own, because the probe held an authorized WebSocket session at the time —
+leaving open the possibility that the TV granted REST access by source IP.
+It does not.
+
+**Consequence:** the QNAP service needs no pairing, no token file, no client
+name, and no WebSocket handshake — which is how `tv_local.py` is written. It
+also means the service carries no credentials of any kind for the displays.
+
+### Library caveat — carry this into Phase 2
+
+`samsungtvws` tolerates a **fixed** list of events while opening a connection
+(`IGNORE_EVENTS_AT_STARTUP = ('ed.edenTV.update', 'ms.voiceApp.hide')`) and
+raises `ConnectionFailure` on anything else. Models announce different things
+first: the S95 sends `ms.remote.touchDisable`, which is not on that list, so the
+connection is abandoned before pairing can even be offered.
+
+Only `ms.channel.connect` and `ms.channel.unauthorized` are actually verdicts;
+everything else during startup is chatter to read past. The probe patches
+`samsungtvws.connection.IGNORE_EVENTS_AT_STARTUP` to that rule, which is bounded
+by the socket timeout so an unresponsive TV still errors out.
+
+This affects **the probe only**. The QNAP service never opens a WebSocket — it
+launches over plain REST — so it neither needs this patch nor depends on
+`samsungtvws` at all. Should a future display ever require the WebSocket path,
+this caveat comes back with it, and the library version would need pinning.
+
+### Wake-on-LAN — **out of scope**
+
+Tested on the M7 (Wi-Fi connected): does not wake. Not expected to work on the
+S95 either. This does not matter: the SmartThings routine turns the display on
+*before* triggering the launch, so the service only ever has to start an app on a
+set that is already awake — which is exactly what was tested and works.
+
+Turning a TV on from a routine is ordinary SmartThings app behaviour, not a
+developer-API call, so it stays free after October 2026.
+
+**Consequence for Phase 2:** drop Wake-on-LAN from the design, but add a
+readiness wait. The TV's network stack is not up the instant the routine powers
+it on, so the launch must poll port 8002 until it answers (with a timeout) and
+retry the launch a few times rather than firing once and failing. This replaces
+WoL as the thing that makes the trigger reliable.
+
+If the assumption "the TV is always already on" ever stops holding, revisit —
+`--wol` is still in the probe.
+
+## 2. ESP32 flash / RAM baseline — **recorded**
+
+Arduino IDE, ESP32 core 3.3.12, with the hub push included:
+
+```
+Sketch uses 2768838 bytes (88%) of program storage space. Maximum is 3145728 bytes.
+Global variables use 140416 bytes (42%) of dynamic memory, leaving 187264 bytes
+for local variables. Maximum is 327680 bytes.
+```
+
+RAM is comfortable. **Flash is not: 88% of the default partition leaves about
+377 KB.** Matter plus WiFi plus HTTPClient is most of that, and the hub push
+added little, but anything substantial from here — OTA, TLS to the hub, a
+second radio stack — will not fit without changing the partition scheme. Check
+this number after any dependency change.
+
+The core upgrade from 3.3.5 to 3.3.12 broke the build: `pressure_measurement`
+config fields dropped their `pressure_` prefix. Fixed in weather-station#3.
+A core upgrade also wipes `libraries/Matter/src/MatterEndpoints/`, so the two
+`MatterWeatherStation` files have to be copied in again every time.
+
+## 3. Edge driver published — not yet confirmed
+
+---
+
+## Deployment status — QNAP
+
+Running as `tv-app-launcher-no-api` on `winston:5000`, deployed via Container
+Station 3.x Applications from `docker-compose.no-api.yml`. The old
+SmartThings-based container is stopped but kept as a rollback.
+
+Verified 2026-09-05:
+
+| Check | Result |
+|-------|--------|
+| Service healthy, v3.1.0, local launch method | pass |
+| `.env` reached the container; ingest and read tokens enforced | pass |
+| Container reaches the displays across the LAN | pass |
+| Sensor ingest -> read round trip, all seven fields, not stale | pass |
+| Read token rejected on `/ingest`, ingest token rejected on `/api/weather` | pass |
+| Real routine launch | **pass** |
+
+End to end, from the logs:
+
+```
+Launch requested on M7 Monitor (m7)
+M7 Monitor: 'tvweather1.tvweather' confirmed running
+```
+
+Routine -> Edge driver -> NAS -> the display's own REST API, with no SmartThings
+API call in the chain. The TV confirmed the app was actually running rather than
+merely accepting the command. No rediscovery line, so the cached .193 answered
+straight away — the fast path, about 3.5 seconds end to end.
+
+**Paid call site 3 of 3 is eliminated.** The remaining two are the TV app and the
+phone app reading the sensor, which the data hub now serves.
+
+**Discovery proved itself on first contact.** The M7 had already moved from
+192.168.18.186 to .193, so the configured address was stale before deployment
+even finished. `/displays?rediscover=1` identified it by MAC and cached the new
+address. Without that, the launch would have failed against a config that looked
+entirely correct — which is what the lack of DHCP reservations would have cost.
+
+Networking is therefore confirmed: Container Station's bridge network reaches
+the LAN, and the NAS is on the same segment as the displays.

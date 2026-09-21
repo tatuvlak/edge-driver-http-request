@@ -1,3 +1,18 @@
+# Container Station 3.x: Applications -> Create -> paste this file.
+# Older Container Station: Images -> Build, then create the container by hand
+# (see ../DEPLOYMENT_QNAP_CONTAINER_STATION.md).
+#
+# Configuration comes from /share/Container/tv-app-launcher/.env, by absolute
+# path so it is found wherever Container Station copies this file to.
+#
+# There is deliberately no `environment:` block. Container Station copies the
+# compose file to a temporary directory, so ${VAR} interpolation — which reads
+# the .env sitting next to the compose file — would resolve to empty strings.
+# Since `environment:` takes precedence over `env_file:`, those empty values
+# would then override the real ones and the service would start with nothing
+# configured, while the .env file still looked correct. Defaults live in
+# app.py's Config class, so nothing is lost by leaving them out here.
+
 services:
   tv-app-launcher:
     build:
@@ -8,27 +23,10 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      # Persist OAuth tokens across container restarts
+      # The weather database and the cache of discovered display addresses live
+      # here. Without this volume both are discarded whenever the container is
+      # recreated.
       - /share/Container/tv-app-launcher/data:/app/data
-    environment:
-      # OAuth configuration (preferred method)
-      - ST_CLIENT_ID=${ST_CLIENT_ID}
-      - ST_CLIENT_SECRET=${ST_CLIENT_SECRET}
-      - ST_REFRESH_TOKEN=${ST_REFRESH_TOKEN}
-      # External callback URL (GitHub Pages) - service runs on local NAS
-      - OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI:-https://tatuvlak.github.io/tv-weather-oauth/callback.html}
-      - TOKEN_FILE=${TOKEN_FILE:-/app/data/oauth_tokens.json}
-      # PAT fallback (deprecated)
-      - SMARTTHINGS_PAT=${SMARTTHINGS_PAT}
-      # Device configuration
-      - TV_DEVICE_ID_S95=${TV_DEVICE_ID_S95}
-      - TV_DEVICE_ID_M7=${TV_DEVICE_ID_M7}
-      - TV_DEVICE_ID=${TV_DEVICE_ID}
-      - TV_APP_ID=${TV_APP_ID}
-      # Server configuration
-      - HOST=${HOST:-0.0.0.0}
-      - PORT=${PORT:-5000}
-      - SECRET_KEY=${SECRET_KEY}
     env_file:
       - /share/Container/tv-app-launcher/.env
     networks:

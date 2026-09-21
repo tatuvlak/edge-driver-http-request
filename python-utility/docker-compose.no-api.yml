@@ -1,0 +1,40 @@
+# Clean deployment into /share/Container/tv-app-launcher-no-api, alongside the
+# existing tv-app-launcher container rather than replacing it — so the old
+# SmartThings-based service stays available as a rollback.
+#
+# Container Station 3.x: Applications -> Create -> paste this whole file.
+#
+# Every path is absolute on purpose. Container Station copies the compose file
+# to a temporary directory before running it, so anything relative — including
+# the `.env` that ${VAR} interpolation would read — resolves against the wrong
+# place. For the same reason there is no `environment:` block: those values
+# would come out empty and, because `environment:` overrides `env_file:`, would
+# beat the real ones. Defaults live in app.py's Config class.
+#
+# PORTS: this binds host port 5000, which the old container also uses. Stop the
+# old container first, or change the left-hand number to 5001 to run both while
+# testing (the Edge driver talks to 5000, so it will keep hitting the old one
+# until you switch).
+
+services:
+  tv-app-launcher-no-api:
+    build:
+      context: /share/Container/tv-app-launcher-no-api
+      dockerfile: Dockerfile
+    container_name: tv-app-launcher-no-api
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    volumes:
+      # The weather database and the cache of discovered display addresses live
+      # here. Without this volume both are lost whenever the container is
+      # recreated.
+      - /share/Container/tv-app-launcher-no-api/data:/app/data
+    env_file:
+      - /share/Container/tv-app-launcher-no-api/.env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health', timeout=5).raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

@@ -13,9 +13,21 @@ local log = require "log"
 -- Module variables
 local initialized = false
 
--- Configuration - these should be set via device preferences
-local DEFAULT_SERVER_URL = "http://192.168.1.100:5000"  -- Fallback if preferences not set
+-- Configuration - these should be set via device preferences.
+--
+-- The fallback is only reached if serverUrl is somehow unset. It used to be
+-- 192.168.1.100, a different subnet entirely, so a blank preference failed
+-- silently into nowhere. Point it at the real NAS so the fallback is at least
+-- plausible, and log loudly when it is used.
+local DEFAULT_SERVER_URL = "http://192.168.18.250:5000"
 local DEFAULT_ENDPOINT = "/launch-tv-app"
+
+-- Bound the request. The utility can legitimately take a while when a display
+-- has moved and it has to rediscover by MAC, and it waits for the set to
+-- confirm the app is actually running - but "a while" must not mean forever.
+-- The NAS is a general-purpose box that can get busy, and a request with no
+-- timeout would leave the driver waiting on it indefinitely.
+local REQUEST_TIMEOUT_SECONDS = 60
 
 -- Device lifecycle handlers
 local function device_init(driver, device)
@@ -39,32 +51,56 @@ end
 
 -- HTTP request helper
 local function send_http_request(device, action)
-  local server_url = (device.preferences and device.preferences.serverUrl) or DEFAULT_SERVER_URL
+  local prefs = device.preferences or {}
+  local server_url = prefs.serverUrl
+  if not server_url or server_url == "" then
+    server_url = DEFAULT_SERVER_URL
+    log.warn("serverUrl preference is not set - falling back to " .. DEFAULT_SERVER_URL)
+  end
   local endpoint = DEFAULT_ENDPOINT
   local url = server_url .. endpoint
-  
+
   -- Get target device from preferences
-  local target_device = (device.preferences and device.preferences.targetDevice) or "s95"
-  
+  local target_device = prefs.targetDevice or "s95"
+
   log.info("Sending request to: " .. url)
   log.info("Target device: " .. target_device)
-  
+
   local request_body = json.encode({
     action = action,
     device_id = device.id,
     target_device = target_device,
     timestamp = os.time()
   })
-  
+
+  local headers = {
+    ["Content-Type"] = "application/json",
+    ["Content-Length"] = tostring(#request_body)
+  }
+
+  -- Send the action token only when one is configured. Leave the preference
+  -- blank and the driver behaves exactly as before, which is what the utility
+  -- expects while its ACTION_TOKEN is empty.
+  --
+  -- This exists so the endpoint can be locked down later WITHOUT republishing
+  -- the driver. Publishing goes through the SmartThings developer API, which
+  -- becomes a paid subscription; the driver itself runs on the hub and is
+  -- free forever. So the flexibility has to be built in before that door
+  -- closes, not when it is first needed.
+  local action_token = prefs.actionToken
+  if action_token and action_token ~= "" then
+    headers["Authorization"] = "Bearer " .. action_token
+    log.info("Sending action token")
+  end
+
   local response_body = {}
-  
+
+  http.TIMEOUT = REQUEST_TIMEOUT_SECONDS
+
   local res, code, response_headers = http.request({
     url = url,
     method = "POST",
-    headers = {
-      ["Content-Type"] = "application/json",
-      ["Content-Length"] = tostring(#request_body)
-    },
+    headers = headers,
     source = ltn12.source.string(request_body),
     sink = ltn12.sink.table(response_body)
   })
@@ -72,6 +108,13 @@ local function send_http_request(device, action)
   if code == 200 then
     log.info("Request successful: " .. code)
     return true, table.concat(response_body)
+  elseif code == 401 or code == 403 then
+    -- Almost always the action token: either set here and not on the utility,
+    -- or set there and left blank here. Say so rather than printing a bare
+    -- status, because this is read off the hub's driver log.
+    log.error("Request rejected (HTTP " .. tostring(code) ..
+              ") - check the Action token preference matches ACTION_TOKEN on the server")
+    return false, "HTTP " .. tostring(code)
   else
     log.error("Request failed with code: " .. tostring(code))
     return false, "HTTP " .. tostring(code)
@@ -156,6 +199,6 @@ local tv_app_launcher_driver = Driver("tv-app-launcher", {
 })
 
 -- Start the driver
-log.info("TV App Launcher Edge Driver v1.0 Started")
+log.info("TV App Launcher Edge Driver v1.1 Started")
 
 tv_app_launcher_driver:run()

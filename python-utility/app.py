@@ -1,16 +1,29 @@
 """
 TV App Launcher Utility
-Receives HTTP requests from SmartThings Edge Driver and launches TV app via SmartThings API
+
+Receives HTTP requests from the SmartThings Edge Driver and launches the weather
+app on a Samsung display over the LAN, using the display's own REST API.
+
+The launch used to go out through the SmartThings cloud API, which becomes a paid
+subscription in October 2026. The Edge driver's contract is unchanged — it still
+POSTs to /launch-tv-app — only the implementation behind it moved local, so
+existing routines keep working untouched. See ../phase0/RESULTS.md.
 """
 
 from flask import Flask, request, jsonify, redirect, session
 import requests
 import os
 import json
+import hmac
 import logging
+import time
+from functools import wraps
 from datetime import datetime
 from dotenv import load_dotenv
 from pathlib import Path
+
+import tv_local
+import weather_store
 
 # Load environment variables from .env file
 load_dotenv()
@@ -43,20 +56,169 @@ class Config:
     OAUTH_REDIRECT_URI = os.environ.get('OAUTH_REDIRECT_URI', 'https://tatuvlak.github.io/tv-weather-oauth/callback.html')
     # Note: Authorization code from external callback must be manually entered via /oauth/token endpoint
     
-    # TV/Monitor configuration
-    # S95 TV (default)
+    # TV/Monitor configuration — local control (no SmartThings)
+    # Addresses on the LAN. Give each display a DHCP reservation so these are stable.
+    TV_HOST_S95 = os.environ.get('TV_HOST_S95', '')
+    TV_HOST_M7 = os.environ.get('TV_HOST_M7', '')
+
+    # MAC addresses — the stable identity of each display. With these set, a
+    # display that moves to a new DHCP address is found again automatically;
+    # without them, a lease change breaks the launch until TV_HOST_* is edited.
+    TV_MAC_S95 = os.environ.get('TV_MAC_S95', '')
+    TV_MAC_M7 = os.environ.get('TV_MAC_M7', '')
+    # Where discovered addresses are remembered between restarts.
+    DISPLAY_CACHE_PATH = os.environ.get('DISPLAY_CACHE_PATH', '/app/data/display_ips.json')
+    # Subnet to scan when a display has moved. Defaults to the one implied by
+    # its last known address, which is right on a normal flat home network.
+    TV_SCAN_SUBNET = os.environ.get('TV_SCAN_SUBNET', '')
+
+    # How long to wait for a display to answer after the routine powers it on,
+    # and how many times to retry the launch itself.
+    TV_READY_TIMEOUT = float(os.environ.get('TV_READY_TIMEOUT', 30))
+    TV_LAUNCH_ATTEMPTS = int(os.environ.get('TV_LAUNCH_ATTEMPTS', 3))
+
+    # Legacy SmartThings device IDs — no longer used to launch the app, kept only
+    # for the /device-status endpoint until that is removed too.
     TV_DEVICE_ID_S95 = os.environ.get('TV_DEVICE_ID_S95', os.environ.get('TV_DEVICE_ID', ''))
-    # M7 Monitor
     TV_DEVICE_ID_M7 = os.environ.get('TV_DEVICE_ID_M7', '')
-    
+
     TV_APP_ID = os.environ.get('TV_APP_ID', '')  # Your weather app ID
     
+    # Weather data hub
+    WEATHER_DB_PATH = os.environ.get('WEATHER_DB_PATH', '/app/data/weather.db')
+    # A reading older than this is served with stale=true so the displays can
+    # say so rather than quietly showing an hour-old number as if it were now.
+    # The default is sized for the station's shipped cycle — 300s of deep sleep
+    # plus ~70s awake, so a reading roughly every 370s — with room for one
+    # missed cycle. The old 120 predates deep sleep and marked every reading
+    # stale. Raise this if you lengthen SENSOR_SLEEP_SECONDS on the sensor.
+    WEATHER_STALE_AFTER = float(os.environ.get('WEATHER_STALE_AFTER', 800))
+    WEATHER_RETENTION_DAYS = float(os.environ.get('WEATHER_RETENTION_DAYS', 30))
+
+    # Three separate tokens, because these have very different blast radii.
+    # The read token ships inside the .wgt on the TV, so it must never be the
+    # one that can forge sensor readings or command hardware.
+    INGEST_TOKEN = os.environ.get('INGEST_TOKEN', '')   # write: the ESP32 only
+    READ_TOKEN = os.environ.get('READ_TOKEN', '')       # read: TV and phone apps
+    ACTION_TOKEN = os.environ.get('ACTION_TOKEN', '')   # act: the Edge driver
+
     # Server configuration
     PORT = int(os.environ.get('PORT', 5000))
     HOST = os.environ.get('HOST', '0.0.0.0')
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
 config = Config()
+
+
+def get_displays():
+    """The displays this service can drive, keyed by the Edge driver's target_device.
+
+    Addresses come from config, then from whatever discovery last found — the
+    cached value wins when config has gone stale, which is the usual case after
+    a DHCP lease changes.
+    """
+    cache = _load_display_cache()
+    return {
+        's95': tv_local.Display(
+            key='s95', name='S95 TV',
+            host=cache.get('s95') or config.TV_HOST_S95, mac=config.TV_MAC_S95,
+        ),
+        'm7': tv_local.Display(
+            key='m7', name='M7 Monitor',
+            host=cache.get('m7') or config.TV_HOST_M7, mac=config.TV_MAC_M7,
+        ),
+    }
+
+
+def _load_display_cache():
+    try:
+        path = Path(config.DISPLAY_CACHE_PATH)
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception:
+        logger.warning("Could not read the display cache; ignoring it", exc_info=True)
+    return {}
+
+
+def _remember_display(key, host):
+    try:
+        path = Path(config.DISPLAY_CACHE_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cache = _load_display_cache()
+        cache[key] = host
+        path.write_text(json.dumps(cache, indent=2))
+        logger.info("Remembered %s at %s", key, host)
+    except Exception:
+        # Losing the cache costs a rescan next time, nothing more.
+        logger.warning("Could not write the display cache", exc_info=True)
+
+
+def resolve_display(display):
+    """Return the display at an address that answers, rediscovering if needed.
+
+    The fast path is the address we already have. Only when that stops
+    answering do we scan, and only when a MAC is configured to identify the
+    result — otherwise we could just as easily point at the neighbour's TV.
+    """
+    if display.host and tv_local.is_awake(display, timeout=1.5):
+        return display, None
+
+    if not display.mac:
+        hint = ('No MAC configured, so a moved display cannot be found again. '
+                f'Set TV_MAC_{display.key.upper()} in .env, or give it a DHCP reservation.')
+        return display, hint
+
+    subnet = config.TV_SCAN_SUBNET or display.host
+    if not subnet:
+        return display, 'No address or subnet to scan from; set TV_SCAN_SUBNET.'
+
+    logger.info("%s is not at %s any more; looking for it by MAC", display.name, display.host or '?')
+    found = tv_local.find_by_mac(display.mac, subnet, port=display.port)
+    if not found:
+        return display, f'{display.name} was not found on {subnet.rsplit(".", 1)[0]}.0/24'
+
+    _remember_display(display.key, found)
+    return display.at(found), None
+
+def _token_ok(expected):
+    """Check the request's bearer token against `expected`.
+
+    An unset token means that endpoint is unauthenticated. That is deliberate
+    for the action token: the Edge driver currently sends no credentials, and
+    turning this on before the driver is republished would break the routine.
+    Ingest and read are new endpoints with no such constraint, so they should
+    always have tokens set.
+    """
+    if not expected:
+        return True
+    supplied = request.headers.get('Authorization', '')
+    if supplied.startswith('Bearer '):
+        supplied = supplied[7:]
+    else:
+        supplied = request.headers.get('X-Auth-Token', '')
+    # compare_digest over a constant-time comparison of equal-length strings
+    return hmac.compare_digest(supplied, expected)
+
+
+def require_token(get_expected):
+    """Guard a route with one of the configured tokens."""
+    def decorator(view):
+        @wraps(view)
+        def wrapper(*args, **kwargs):
+            if not _token_ok(get_expected()):
+                return jsonify({'success': False, 'error': 'unauthorized'}), 401
+            return view(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+try:
+    weather_store.init(config.WEATHER_DB_PATH)
+except Exception:
+    # A broken store must not stop the service launching apps — that path is
+    # independent and is the one a routine depends on.
+    logger.exception("Could not initialise the weather store at %s", config.WEATHER_DB_PATH)
+
 
 class SmartThingsAPI:
     """SmartThings API client with OAuth support"""
@@ -308,11 +470,11 @@ class SmartThingsAPI:
 # Uses OAuth by default, falls back to PAT if OAuth is not configured
 use_oauth = bool(config.ST_CLIENT_ID and (config.ST_REFRESH_TOKEN or Path(config.TOKEN_FILE).exists()))
 if not use_oauth and not config.ST_PAT:
-    logger.warning("Neither OAuth nor PAT configured! Authentication will fail.")
+    logger.info("No SmartThings credentials configured - fine, launching does not need them")
 elif use_oauth:
-    logger.info("Using OAuth authentication")
+    logger.info("SmartThings OAuth configured (only used by the legacy /device-status endpoint)")
 else:
-    logger.info("Using PAT authentication (OAuth not configured)")
+    logger.info("SmartThings PAT configured (only used by the legacy /device-status endpoint)")
     
 st_api = SmartThingsAPI(use_oauth=use_oauth)
 
@@ -322,12 +484,60 @@ app.secret_key = config.SECRET_KEY
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    try:
+        row = weather_store.latest(config.WEATHER_DB_PATH)
+        weather = {
+            'has_readings': row is not None,
+            'age_seconds': round(time.time() - row['recorded_at'], 1) if row else None,
+        }
+    except Exception as err:
+        weather = {'error': str(err)}
+
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.0.0',
-        'auth_method': 'OAuth' if st_api.use_oauth else 'PAT'
+        'version': '3.1.0',
+        'launch_method': 'local REST (no SmartThings)',
+        'weather': weather,
     })
+
+
+@app.route('/displays', methods=['GET'])
+def displays_status():
+    """Which displays are configured, and are they answering right now?
+
+    Setup and troubleshooting aid: distinguishes 'wrong address in .env' from
+    'display is off', which otherwise look the same from a failed launch.
+    Add ?rediscover=1 to hunt for anything unreachable by MAC.
+    """
+    rediscover = request.args.get('rediscover') == '1'
+    report = {}
+    for key, display in get_displays().items():
+        entry = {
+            'name': display.name,
+            'host': display.host or None,
+            'mac': display.mac or None,
+            'configured': display.configured,
+            'reachable': bool(display.host) and tv_local.is_awake(display),
+        }
+        if rediscover and not entry['reachable'] and display.mac:
+            resolved, err = resolve_display(display)
+            entry['rediscovered_at'] = resolved.host if not err else None
+            entry['reachable'] = not err
+            if err:
+                entry['error'] = err
+            else:
+                # Report where it actually is, not the stale address we started
+                # from — otherwise the same payload shows two different hosts.
+                entry['configured_host'] = entry['host']
+                entry['host'] = resolved.host
+        if not display.mac:
+            entry['warning'] = (
+                f'No TV_MAC_{key.upper()} set — if this display gets a new DHCP '
+                'address, the launch will fail until .env is edited.'
+            )
+        report[key] = entry
+    return jsonify({'displays': report, 'app_id': config.TV_APP_ID or None})
 
 @app.route('/oauth/authorize', methods=['GET'])
 def oauth_authorize():
@@ -455,60 +665,191 @@ def oauth_token_exchange():
         }), 500
 
 @app.route('/launch-tv-app', methods=['POST'])
+@require_token(lambda: config.ACTION_TOKEN)
 def launch_tv_app():
-    """Launch TV app endpoint - called by Edge Driver"""
+    """Launch the weather app on a display — called by the Edge Driver.
+
+    The request contract is unchanged from the SmartThings implementation, so
+    the driver and any existing routines need no modification. The routine is
+    expected to have powered the display on already; this waits for it to come
+    up rather than trying to wake it.
+    """
     try:
         data = request.get_json(silent=True) or {}
-        # Determine which device to use based on target_device parameter
-        target_device = data.get('target_device') or data.get('target') or 's95'  # Default to S95 TV
-        
-        if target_device == 'm7':
-            device_id = config.TV_DEVICE_ID_M7
-            device_name = "M7 Monitor"
-        else:
-            device_id = config.TV_DEVICE_ID_S95
-            device_name = "S95 TV"
-        
-        logger.info(f"Target device: {device_name} ({target_device})")
-        
-        # Validate configuration
-        if not device_id:
+        target_device = data.get('target_device') or data.get('target') or 's95'
+
+        displays = get_displays()
+        display = displays.get(target_device)
+        if display is None:
             return jsonify({
                 'success': False,
-                'error': f'Device ID not configured for {device_name}'
+                'error': f"Unknown target_device '{target_device}'",
+                'known_devices': sorted(displays),
+            }), 400
+
+        logger.info("Launch requested on %s (%s)", display.name, target_device)
+
+        if not display.configured:
+            return jsonify({
+                'success': False,
+                'error': f'No address or MAC configured for {display.name}',
+                'hint': f'Set TV_HOST_{target_device.upper()} (and ideally TV_MAC_{target_device.upper()}) in .env',
             }), 500
-        
+
+        # The display may have taken a new DHCP address since we last spoke to
+        # it; find it again by MAC rather than failing.
+        display, resolve_error = resolve_display(display)
+        if resolve_error:
+            return jsonify({
+                'success': False,
+                'error': f'Could not locate {display.name}',
+                'hint': resolve_error,
+            }), 502
+
         if not config.TV_APP_ID:
             return jsonify({
                 'success': False,
-                'error': 'TV_APP_ID not configured'
+                'error': 'TV_APP_ID not configured',
             }), 500
-        
-        # Authentication check is now handled in get_headers()
-        # which will automatically refresh token if needed
-        
-        # Launch the app
-        success, result = st_api.launch_app(device_id, config.TV_APP_ID)
-        
+
+        success, details = tv_local.launch_app(
+            display,
+            config.TV_APP_ID,
+            ready_timeout=config.TV_READY_TIMEOUT,
+            attempts=config.TV_LAUNCH_ATTEMPTS,
+        )
+
+        payload = {
+            'success': success,
+            'device': display.name,
+            'timestamp': datetime.now().isoformat(),
+            'details': details,
+        }
+
         if success:
-            return jsonify({
-                'success': True,
-                'message': f'TV app launched successfully on {device_name}',
-                'device': device_name,
-                'timestamp': datetime.now().isoformat(),
-                'result': result
-            })
-        
-        return jsonify({
-            'success': False,
-            'error': result
-        }), 500
+            payload['message'] = f'Weather app launched on {display.name}'
+            return jsonify(payload)
+
+        payload['error'] = details.get('error', 'launch failed')
+        return jsonify(payload), 502
     except Exception as e:
         logger.exception("Unexpected error while launching TV app")
         return jsonify({
             'success': False,
             'error': str(e)
         }), 500
+
+# Pruning is done on the ingest path rather than a background thread, because
+# gunicorn runs several workers and a timer in each would just multiply the work.
+# Once an hour is plenty at one reading every 30 seconds.
+_PRUNE_INTERVAL = 3600.0
+_last_prune = 0.0
+
+
+def _prune_if_due():
+    global _last_prune
+    now = time.time()
+    if now - _last_prune < _PRUNE_INTERVAL:
+        return
+    _last_prune = now
+    try:
+        weather_store.prune(config.WEATHER_DB_PATH, config.WEATHER_RETENTION_DAYS)
+    except Exception:
+        # Never fail an ingest over housekeeping; the reading is the point.
+        logger.exception("Pruning old readings failed")
+
+
+@app.route('/ingest', methods=['POST'])
+@require_token(lambda: config.INGEST_TOKEN)
+def ingest_reading():
+    """Accept a reading from the weather station.
+
+    The ESP32 posts here every 30 seconds, in the same loop that already updates
+    its Matter clusters. This is the path that replaces reading the sensor back
+    out of the SmartThings cloud.
+    """
+    try:
+        reading = weather_store.validate(request.get_json(silent=True))
+    except weather_store.ValidationError as err:
+        # Say exactly what was wrong: this is read off a serial console with no
+        # debugger attached.
+        logger.warning("Rejected reading: %s", err)
+        return jsonify({'success': False, 'error': str(err)}), 400
+
+    try:
+        recorded_at = weather_store.record(config.WEATHER_DB_PATH, reading)
+    except Exception as err:
+        logger.exception("Could not store reading")
+        return jsonify({'success': False, 'error': str(err)}), 500
+
+    logger.info("Recorded reading: %s", ", ".join(f"{k}={v}" for k, v in reading.items()))
+    _prune_if_due()
+    return jsonify({
+        'success': True,
+        'recorded_at': datetime.fromtimestamp(recorded_at).isoformat(),
+        'fields': sorted(reading),
+    })
+
+
+def _serve_reading(row):
+    """Shape a stored row for the apps, with an honest freshness signal."""
+    recorded_at = row.pop('recorded_at')
+    age = max(0.0, time.time() - recorded_at)
+    payload = {k: v for k, v in row.items() if v is not None}
+    payload['recorded_at'] = datetime.fromtimestamp(recorded_at).isoformat()
+    payload['age_seconds'] = round(age, 1)
+    # The displays need to be able to tell "this is now" from "this is whatever
+    # the sensor last managed to send", rather than rendering both identically.
+    payload['stale'] = age > config.WEATHER_STALE_AFTER
+    return payload
+
+
+@app.route('/api/weather', methods=['GET'])
+@require_token(lambda: config.READ_TOKEN)
+def api_weather():
+    """The latest reading — what the TV and phone apps poll."""
+    try:
+        row = weather_store.latest(config.WEATHER_DB_PATH)
+    except Exception as err:
+        logger.exception("Could not read the weather store")
+        return jsonify({'success': False, 'error': str(err)}), 500
+
+    if row is None:
+        return jsonify({
+            'success': False,
+            'error': 'no readings yet',
+            'hint': 'The weather station has not posted to /ingest.',
+        }), 404
+
+    return jsonify(_serve_reading(dict(row)))
+
+
+@app.route('/api/weather/history', methods=['GET'])
+@require_token(lambda: config.READ_TOKEN)
+def api_weather_history():
+    """Recent readings — this is what replaces the SmartThings history."""
+    try:
+        hours = float(request.args.get('hours', 24))
+    except ValueError:
+        return jsonify({'success': False, 'error': 'hours must be a number'}), 400
+    hours = max(0.1, min(hours, 24 * 31))
+
+    try:
+        rows = weather_store.history(config.WEATHER_DB_PATH, hours=hours)
+    except Exception as err:
+        logger.exception("Could not read history")
+        return jsonify({'success': False, 'error': str(err)}), 500
+
+    return jsonify({
+        'hours': hours,
+        'count': len(rows),
+        'readings': [
+            {**{k: v for k, v in r.items() if k != 'recorded_at' and v is not None},
+             'recorded_at': datetime.fromtimestamp(r['recorded_at']).isoformat()}
+            for r in rows
+        ],
+    })
+
 
 @app.route('/device-status', methods=['GET'])
 def device_status():
@@ -551,19 +892,21 @@ def device_status():
 @app.route('/config', methods=['GET'])
 def get_config():
     """Get current configuration (for debugging)"""
-    logger.info(f"Config check - S95 TV device ID: {config.TV_DEVICE_ID_S95}")
-    logger.info(f"Config check - M7 Monitor device ID: {config.TV_DEVICE_ID_M7}")
-    logger.info(f"Config check - TV_APP_ID from config object: {config.TV_APP_ID}")
-    logger.info(f"Config check - ST_PAT from config object: {config.ST_PAT[:8] if config.ST_PAT else 'Not set'}...")
-    
     return jsonify({
-        's95_tv_device_id': config.TV_DEVICE_ID_S95[:8] + '...' if config.TV_DEVICE_ID_S95 else 'Not set',
-        'm7_monitor_device_id': config.TV_DEVICE_ID_M7[:8] + '...' if config.TV_DEVICE_ID_M7 else 'Not set',
-        'tv_app_id': config.TV_APP_ID if config.TV_APP_ID else 'Not set',
-        'auth_method': 'OAuth' if st_api.use_oauth else 'PAT',
-        'auth_configured': bool(st_api.use_oauth and st_api.refresh_token) or bool(config.ST_PAT),
-        'oauth_token_valid': st_api.access_token and not st_api.is_token_expired() if st_api.use_oauth else None,
-        'token_expires_at': datetime.fromtimestamp(st_api.token_expires_at).isoformat() if st_api.token_expires_at else None
+        'launch_method': 'local REST (no SmartThings)',
+        's95_tv_host': config.TV_HOST_S95 or 'Not set',
+        'm7_monitor_host': config.TV_HOST_M7 or 'Not set',
+        'tv_app_id': config.TV_APP_ID or 'Not set',
+        'ready_timeout_seconds': config.TV_READY_TIMEOUT,
+        'launch_attempts': config.TV_LAUNCH_ATTEMPTS,
+        'auth': {
+            'ingest': 'token required' if config.INGEST_TOKEN else 'OPEN - set INGEST_TOKEN',
+            'read': 'token required' if config.READ_TOKEN else 'OPEN - set READ_TOKEN',
+            'launch': 'token required' if config.ACTION_TOKEN else 'open (Edge driver sends none)',
+        },
+        'weather_db': config.WEATHER_DB_PATH,
+        'stale_after_seconds': config.WEATHER_STALE_AFTER,
+        'retention_days': config.WEATHER_RETENTION_DAYS,
     })
 
 if __name__ == '__main__':
@@ -572,11 +915,10 @@ if __name__ == '__main__':
     logger.info("=" * 60)
     logger.info(f"Host: {config.HOST}")
     logger.info(f"Port: {config.PORT}")
-    logger.info(f"S95 TV Device ID: {config.TV_DEVICE_ID_S95[:8] + '...' if config.TV_DEVICE_ID_S95 else 'NOT SET'}")
-    logger.info(f"M7 Monitor Device ID: {config.TV_DEVICE_ID_M7[:8] + '...' if config.TV_DEVICE_ID_M7 else 'NOT SET'}")
-    logger.info(f"TV App ID: {config.TV_APP_ID if config.TV_APP_ID else 'NOT SET'}")
-    logger.info(f"Auth Method: {'OAuth' if st_api.use_oauth else 'PAT'}")
-    logger.info(f"Auth Configured: {bool(config.ST_PAT or st_api.access_token)}")
+    logger.info(f"S95 TV host: {config.TV_HOST_S95 or 'NOT SET'}")
+    logger.info(f"M7 Monitor host: {config.TV_HOST_M7 or 'NOT SET'}")
+    logger.info(f"TV App ID: {config.TV_APP_ID or 'NOT SET'}")
+    logger.info("Launch method: local REST on port %d (no SmartThings)", tv_local.TV_REST_PORT)
     logger.info("=" * 60)
     
     app.run(host=config.HOST, port=config.PORT, debug=False)
