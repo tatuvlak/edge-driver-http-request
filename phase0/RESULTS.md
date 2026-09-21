@@ -126,7 +126,39 @@ config fields dropped their `pressure_` prefix. Fixed in weather-station#3.
 A core upgrade also wipes `libraries/Matter/src/MatterEndpoints/`, so the two
 `MatterWeatherStation` files have to be copied in again every time.
 
-## 3. Edge driver published — not yet confirmed
+## 3. Edge driver published — **confirmed**
+
+Published 2026-09-21 and verified end to end: routine -> driver -> service ->
+the display's own REST API, with the app opening on the M7.
+
+| Value | Setting |
+|-------|---------|
+| Driver ID | `5590edb7-2c7b-4f82-9b99-b9205e3fc0f8` |
+| Package key | `tv-app-launcher-v2` |
+| Version | `2026-09-21T16:48:17` |
+| Channel | `19b4055e-b69d-4187-a5ed-0df3ad540885` |
+
+From the hub's driver log:
+
+```
+Switch ON command received
+Sending request to: http://192.168.18.250:5000/launch-tv-app
+Target device: m7
+```
+
+**Two drivers shared the name `TV App Launcher`.** A package key change at some
+point left an orphan, `188d0a1b-9e46-4880-9e60-0d3e1f69b3bf`, last built in
+January, never installed on the hub, and indistinguishable from the real one in
+every CLI menu. The only reliable way to tell them apart is the driver ID that
+`edge:drivers:package` prints — the list is not enough to pick from. Deleted
+after this was verified.
+
+**Consequence for any future publish:** `edge:drivers:package` before assigning,
+and use the ID it prints rather than choosing by name. And note that an existing
+device keeps the preferences it already has: a changed default in the profile
+only reaches devices added afterwards, so preferences have to be checked in the
+app after every update.
+
 
 ---
 
