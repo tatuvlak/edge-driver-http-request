@@ -99,19 +99,12 @@ local function new_device(fields)
   }
 end
 
-local NAS_DISPLAYS = "http://nas:5000/displays"
 local NAS_LAUNCH = "http://nas:5000/launch-tv-app"
 local function tv_url(ip) return "http://" .. ip .. ":8001/api/v2/applications/tvweather1.tvweather" end
 local function id_url(ip) return "http://" .. ip .. ":8001/api/v2/" end
 
 local function reset()
   calls, responses, fake_udp_hosts = {}, {}, {}
-  -- /displays always answers, and decodes to this
-  responses[NAS_DISPLAYS] = { code = 200, body = "DISPLAYS" }
-  responses["__decode__DISPLAYS"] = {
-    app_id = "tvweather1.tvweather",
-    displays = { m7 = { mac = "54:44:A3:5C:4B:16", host = "192.168.18.221" } },
-  }
 end
 
 local function saw(pattern)
@@ -167,16 +160,22 @@ check("fallback: path", how, "utility")
 check("fallback: asked SSDP first", saw("ssdp:"), true)
 check("fallback: learned the address", dev.__store.host_m7, "192.168.18.230")
 
--- 4. First run: nothing cached. Bootstraps from /displays, then goes direct.
+-- 4. First run with the NAS DOWN and nothing cached. This is the case that
+--    failed on the hub: the driver fetched the MAC and app id from the NAS,
+--    so when the NAS was unreachable it had neither, skipped the direct path
+--    and SSDP, and fell back to the NAS it could not reach. It must now find
+--    the set on its own.
 reset()
+fake_udp_hosts = { "192.168.18.221" }
+responses[id_url("192.168.18.221")] = { code = 200, body = "M7" }
+responses["__decode__M7"] = { device = { wifiMac = "54:44:A3:5C:4B:16", name = "M7" } }
 responses[tv_url("192.168.18.221")] = { code = 200 }
-dev = new_device({})
+dev = new_device({})            -- nothing cached at all
 ok, how = T.launch(dev)
-check("first run: succeeded", ok, true)
-check("first run: path", how, "direct")
-check("first run: read /displays", saw(NAS_DISPLAYS), true)
-check("first run: cached the MAC", dev.__store.mac_m7, "54:44:A3:5C:4B:16")
-check("first run: cached the app id", dev.__store.app_id, "tvweather1.tvweather")
+check("cold start, NAS down: succeeded", ok, true)
+check("cold start, NAS down: path", how, "ssdp")
+check("cold start, NAS down: never asked the NAS", saw("http://nas:5000"), false)
+check("cold start, NAS down: cached the address", dev.__store.host_m7, "192.168.18.221")
 
 -- 5. Everything fails. Report failure rather than claiming success.
 reset()

@@ -176,41 +176,33 @@ end
 -- What the driver needs to go direct: which MAC identifies this display, and
 -- which app to open.
 --
--- Read from the utility rather than duplicated into preferences, so the .env
--- on the NAS stays the single place these are configured and the two cannot
--- drift apart. Fetched once and remembered; the values only change when the
--- hardware does.
-local function display_meta(device)
+-- These used to be fetched from the utility's /displays, so the .env on the
+-- NAS stayed the single place they were configured. That was wrong, and the
+-- hub log said so plainly: with the NAS unreachable the fetch failed, so the
+-- driver had no MAC, so it skipped the direct path and SSDP entirely and fell
+-- back to... the NAS. The chain depended on the thing it existed to survive.
+--
+-- They are local knowledge now. A MAC and an app id are stable hardware and
+-- packaging facts rather than settings, and the preferences below override
+-- the built-ins for anything that does change, without a republish.
+local DEFAULT_APP_ID = "tvweather1.tvweather"
+local DEFAULT_MAC = {
+  s95 = "F0:70:4F:32:BF:DA",   -- Samsung S95BA 65
+  m7  = "54:44:A3:5C:4B:16",   -- 32" Smart Monitor M7
+}
+
+local function meta_for(device)
+  local prefs = device.preferences or {}
   local target = target_of(device)
-  local mac = device:get_field("mac_" .. target)
-  local app_id = device:get_field("app_id")
-  if mac and app_id then return mac, app_id end
 
-  local body = {}
-  http.TIMEOUT = 10
-  local _, code = http.request({
-    url = nas_base(device) .. "/displays",
-    sink = ltn12.sink.table(body),
-  })
-  if code ~= 200 then
-    log.warn("Could not read /displays from the utility (HTTP " .. tostring(code) ..
-             ") - direct launch unavailable until it answers")
-    return nil, nil
-  end
+  local app_id = prefs.appId
+  if not app_id or app_id == "" then app_id = DEFAULT_APP_ID end
 
-  local ok, parsed = pcall(json.decode, table.concat(body))
-  if not ok or type(parsed) ~= "table" then return nil, nil end
+  -- macS95 / macM7, matching the targetDevice enumeration.
+  local mac = normalise_mac(prefs["mac" .. target:upper()])
+  if not mac then mac = DEFAULT_MAC[target] end
 
-  app_id = parsed.app_id
-  local entry = (parsed.displays or {})[target] or {}
-  mac = normalise_mac(entry.mac)
-
-  if mac then device:set_field("mac_" .. target, mac, { persist = true }) end
-  if app_id then device:set_field("app_id", app_id, { persist = true }) end
-  -- The address it reports is as good a starting hint as any.
-  if entry.host then device:set_field("host_" .. target, entry.host, { persist = true }) end
-
-  return mac, app_id
+  return normalise_mac(mac), app_id
 end
 
 local function send_http_request(device, action)
@@ -299,7 +291,7 @@ end
 -- it stays as the floor: if the new code cannot do it, the old code still can.
 local function launch(device)
   local target = target_of(device)
-  local mac, app_id = display_meta(device)
+  local mac, app_id = meta_for(device)
 
   if app_id then
     local host = device:get_field("host_" .. target)
@@ -421,6 +413,6 @@ tv_app_launcher_driver.__test = {
 }
 
 -- Start the driver
-log.info("TV App Launcher Edge Driver v1.2 Started")
+log.info("TV App Launcher Edge Driver v1.3 Started")
 
 tv_app_launcher_driver:run()
