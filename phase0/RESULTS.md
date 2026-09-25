@@ -180,8 +180,14 @@ day. Whatever else is arguable about this design, the part that finds a display
 by identity rather than by address is not.
 
 Timing, end to end: 5.4s. About 3.6s of that is the fixed SSDP collection
-budget, which runs to completion even once the wanted set has replied. The
-cached path avoids it entirely.
+budget, which runs to completion even once the wanted set has replied.
+
+**The cached path was confirmed on the next press.** The address discovered by
+SSDP is stored with `persist=true`, and the second launch went straight to it:
+no multicast, roughly a second instead of five. All three tiers have now run on
+the hub — `direct` from cache, `ssdp` when the cache is cold or stale, and the
+utility underneath both. Only the first launch after a display moves pays for
+discovery, and it pays once.
 
 ## 5. App launch over plain HTTP — **works, both sets**
 
