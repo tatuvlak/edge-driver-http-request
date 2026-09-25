@@ -159,9 +159,29 @@ Three things this established:
   powering the display on, but a client should retry rather than asking once:
   a set that has just woken may take a moment to start advertising.
 
-**Not established:** whether the SmartThings hub's Lua sandbox can send
-multicast. Only a driver on a hub can show that, which is why the driver keeps
-the utility as a fallback.
+**Established 2026-09-25 on the hub**, which is what the probe could not show.
+Driver v1.3, with the NAS deliberately down:
+
+```
+Switch ON command received
+SSDP: 4 responder(s)
+SSDP: found 54:44:A3:5C:4B:16 at 192.168.18.224 (32" Smart Monitor M7)
+Launched on 192.168.18.224 (found by SSDP)
+Launch path: ssdp
+```
+
+The Edge sandbox can send multicast and receive the replies, and the hub saw
+the same four responders the laptop did. The app opened. The utility was never
+contacted.
+
+Note the address: **.224**. The same display answered on **.221** a few hours
+earlier, and **.186** and **.193** in the weeks before. Three addresses in one
+day. Whatever else is arguable about this design, the part that finds a display
+by identity rather than by address is not.
+
+Timing, end to end: 5.4s. About 3.6s of that is the fixed SSDP collection
+budget, which runs to completion even once the wanted set has replied. The
+cached path avoids it entirely.
 
 ## 5. App launch over plain HTTP — **works, both sets**
 
