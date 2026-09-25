@@ -86,15 +86,26 @@ launches over plain REST — so it neither needs this patch nor depends on
 `samsungtvws` at all. Should a future display ever require the WebSocket path,
 this caveat comes back with it, and the library version would need pinning.
 
-### Wake-on-LAN — **out of scope**
+### Wake-on-LAN — does not power the set on
 
-Tested on the M7 (Wi-Fi connected): does not wake. Not expected to work on the
-S95 either. This does not matter: the SmartThings routine turns the display on
-*before* triggering the launch, so the service only ever has to start an app on a
-set that is already awake — which is exactly what was tested and works.
+Re-tested 2026-09-25 on the S95 with a corrected probe. The magic packet does
+not turn the television on.
 
-Turning a TV on from a routine is ordinary SmartThings app behaviour, not a
-developer-API call, so it stays free after October 2026.
+**The earlier "does not wake" result was right; the probe that produced it was
+not.** Step 6 checked only whether TCP 8001 or 8002 answered — and a Samsung
+set with network standby enabled keeps those ports open while the screen is
+off. That is the same reason `curl` to port 8001 works at all. So the check
+passed whether or not the packet did anything, with no control: it would have
+passed without sending a packet. On the S95 run it reported PASS while the
+screen stayed dark, and only the operator watching the television caught it.
+
+The probe now reads `device.PowerState` from `/api/v2/` before and after the
+packet, and requires a standby -> on transition. It refuses to run at all if
+the set still reports `on`, rather than measuring nothing.
+
+Powering on from the SmartThings app does work. That goes over the set's
+persistent connection to Samsung's cloud, which a local magic packet cannot
+imitate, so it is not evidence that WoL should work.
 
 **Consequence for Phase 2:** drop Wake-on-LAN from the design, but add a
 readiness wait. The TV's network stack is not up the instant the routine powers
