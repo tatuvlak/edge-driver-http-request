@@ -39,3 +39,33 @@ preferences:
       minLength: 0
       maxLength: 255
       default: ""
+  - name: appId
+    title: "App ID"
+    description: "Optional. The Tizen app to open. Blank uses the built-in default."
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      minLength: 0
+      maxLength: 100
+      default: ""
+  - name: macS95
+    title: "S95 TV MAC"
+    description: "Optional. Identifies the display when its address changes. Blank uses the built-in."
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      minLength: 0
+      maxLength: 17
+      default: ""
+  - name: macM7
+    title: "M7 Monitor MAC"
+    description: "Optional. Identifies the display when its address changes. Blank uses the built-in."
+    required: false
+    preferenceType: string
+    definition:
+      stringType: text
+      minLength: 0
+      maxLength: 17
+      default: ""
