@@ -481,6 +481,27 @@ def probe_diagnose(tv: SamsungTVWS, app_id: str) -> None:
 # 6. Wake-on-LAN (optional)
 # --------------------------------------------------------------------------
 
+def read_power_state(ip: str) -> str:
+    """Ask the TV whether it is on or in standby. "unknown" if it will not say.
+
+    This answers in standby too — which is the whole point. A Samsung TV with
+    network standby enabled keeps its ports open when the screen is off, so a
+    TCP connect proves only that the set is plugged in.
+    """
+    for scheme, port in (("http", 8001), ("https", 8002)):
+        url = f"{scheme}://{ip}:{port}/api/v2/"
+        try:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(url, timeout=3, context=ctx) as resp:
+                info = json.loads(resp.read().decode())
+            return str(info.get("device", {}).get("PowerState", "unknown"))
+        except Exception:
+            continue
+    return "unreachable"
+
+
 def probe_wol(ip: str, mac: str) -> bool:
     header("6. Wake-on-LAN")
     if send_magic_packet is None:
@@ -500,24 +521,40 @@ def probe_wol(ip: str, mac: str) -> bool:
         record("Wake-on-LAN", SKIP, "cancelled")
         return False
 
+    # Establish the control FIRST. This step used to check only whether a TCP
+    # port answered, which a set in standby does anyway — so it passed without
+    # the magic packet doing anything, and reported a TV that never turned on
+    # as a success. Read the power state before and after instead.
+    before = read_power_state(ip)
+    if before == "unreachable":
+        record("Wake-on-LAN", SKIP, "TV not reachable at all — is it unplugged?")
+        return False
+    if before.lower() == "on":
+        record("Wake-on-LAN", SKIP,
+               f"TV still reports PowerState={before} — it has not gone to standby yet")
+        print("  Give it a few more seconds after the screen goes dark, then re-run.")
+        return False
+    record("TV is in standby", PASS, f"PowerState={before}")
+
     send_magic_packet(mac)
     record("Magic packet sent", PASS, mac)
 
-    print("  Waiting up to 30s for the TV to answer...")
+    print("  Waiting up to 30s for the power state to change...")
     for _ in range(30):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
-        awake = sock.connect_ex((ip, 8001)) == 0 or sock.connect_ex((ip, 8002)) == 0
-        sock.close()
-        if awake:
-            record("TV woke up", PASS, "responds after magic packet")
-            return True
         time.sleep(1)
+        now = read_power_state(ip)
+        if now.lower() == "on":
+            record("TV woke up", PASS, f"PowerState {before} -> {now}")
+            return True
 
-    record("TV woke up", FAIL, "no answer within 30s")
+    record("TV woke up", FAIL,
+           f"PowerState still {read_power_state(ip)} after 30s — the set did not turn on")
     print(
-        "\n  Enable Settings > General > Network > Expert Settings > Power On with Mobile\n"
-        "  (wording varies by model). On Wi-Fi this is less reliable than on Ethernet."
+        "\n  The TCP ports stay open in standby, so reachability proves nothing here.\n"
+        "  Try Settings > General > Network > Expert Settings > Power On with Mobile\n"
+        "  (wording varies by model). On Wi-Fi this is less reliable than on Ethernet,\n"
+        "  and on some sets it only works from Samsung's own cloud connection, which\n"
+        "  is not something a local magic packet can imitate."
     )
     return False
 
