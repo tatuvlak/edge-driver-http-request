@@ -126,6 +126,39 @@ config fields dropped their `pressure_` prefix. Fixed in weather-station#3.
 A core upgrade also wipes `libraries/Matter/src/MatterEndpoints/`, so the two
 `MatterWeatherStation` files have to be copied in again every time.
 
+## 4. SSDP discovery from the LAN — **works, both sets**
+
+Tested 2026-09-25 with `phase0/ssdp_probe.py`. Both televisions answer and
+carry enough to identify them:
+
+```
+192.168.18.219   F0:70:4F:32:BF:DA    Samsung S95BA 65 TV
+192.168.18.221   54:44:A3:5C:4B:16    32" Smart Monitor M7
+```
+
+Three things this established:
+
+- **`ssdp:all` is the only question that works.** Asking for
+  `urn:samsung.com:device:RemoteControlReceiver:1` returned zero responders
+  from either set. So a client has to ask broadly and filter by MAC.
+- **Identification by MAC works** — `/api/v2/` on port 8001 reports `wifiMac`,
+  the same value the utility matches on.
+- **A set in standby does not answer.** The S95 was invisible until it was
+  turned on. That is survivable, because a launch always follows the routine
+  powering the display on, but a client should retry rather than asking once:
+  a set that has just woken may take a moment to start advertising.
+
+**Not established:** whether the SmartThings hub's Lua sandbox can send
+multicast. Only a driver on a hub can show that, which is why the driver keeps
+the utility as a fallback.
+
+## 5. App launch over plain HTTP — **works, both sets**
+
+`POST http://<display>:8001/api/v2/applications/<app-id>` returns `true` on
+both televisions. Port 8002 is the same API over TLS with a self-signed
+certificate; 8001 needs neither luasec nor disabled verification, which is
+what makes a launch from the Edge sandbox practical.
+
 ## 3. Edge driver published — **confirmed**
 
 Published 2026-09-21 and verified end to end: routine -> driver -> service ->
