@@ -265,5 +265,36 @@ check("and a reading using the new column stores",
 weather_store.init(legacy)   # must be idempotent
 check("init is idempotent", weather_store.latest(legacy)["temperature_c"] == 20.5)
 
+# --------------------------------------------------------------------------
+section("timestamps carry their offset")
+# A naive ISO string - no offset, no Z - is rendered in whatever zone the
+# container happens to be set to, and this one runs in UTC. The TV app's
+# new Date() then reads it as LOCAL time, so the dashboard clock was wrong by
+# exactly the viewer's UTC offset. age_seconds is epoch arithmetic and was
+# always right, which is why the staleness logic looked perfect while the
+# displayed time was two hours out.
+from datetime import datetime, timezone  # noqa: E402
+
+flaskapp.config.WEATHER_DB_PATH = db
+body = c.get("/api/weather", headers=RD).get_json()
+stamp = body["recorded_at"]
+parsed = datetime.fromisoformat(stamp)
+check("the reading's timestamp is timezone-aware", parsed.tzinfo is not None, stamp)
+# The real test: parsed back, it must point at the same instant the age says.
+drift = abs((datetime.now(timezone.utc) - parsed).total_seconds() - body["age_seconds"])
+check("and agrees with age_seconds to the second", drift < 2, round(drift, 2))
+
+hist = c.get("/api/weather/history?hours=24", headers=RD).get_json()
+check("history timestamps too",
+      all(datetime.fromisoformat(r["recorded_at"]).tzinfo is not None
+          for r in hist["readings"]),
+      hist["readings"][0]["recorded_at"] if hist["readings"] else "none")
+
+ing = c.post("/ingest", json=GOOD, headers=ING).get_json()
+check("and the ingest receipt",
+      datetime.fromisoformat(ing["recorded_at"]).tzinfo is not None, ing["recorded_at"])
+check("as does /health",
+      datetime.fromisoformat(c.get("/health").get_json()["timestamp"]).tzinfo is not None)
+
 print("\n" + ("FAILURES: " + ", ".join(failures) if failures else "all checks passed"))
 sys.exit(1 if failures else 0)
