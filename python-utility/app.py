@@ -768,8 +768,14 @@ def ingest_reading():
     its Matter clusters. This is the path that replaces reading the sensor back
     out of the SmartThings cloud.
     """
+    body = request.get_json(silent=True)
     try:
-        reading = weather_store.validate(request.get_json(silent=True))
+        reading = weather_store.validate(body)
+        # The station holds readings it could not send through a hub outage and
+        # drains them once this answers again. Each one says how old it is, so
+        # it lands in the history at the time it was measured rather than the
+        # time the NAS came back.
+        age = weather_store.backfill_age(body)
     except weather_store.ValidationError as err:
         # Say exactly what was wrong: this is read off a serial console with no
         # debugger attached.
@@ -777,16 +783,22 @@ def ingest_reading():
         return jsonify({'success': False, 'error': str(err)}), 400
 
     try:
-        recorded_at = weather_store.record(config.WEATHER_DB_PATH, reading)
+        recorded_at = weather_store.record(
+            config.WEATHER_DB_PATH, reading,
+            recorded_at=(time.time() - age) if age else None,
+        )
     except Exception as err:
         logger.exception("Could not store reading")
         return jsonify({'success': False, 'error': str(err)}), 500
 
-    logger.info("Recorded reading: %s", ", ".join(f"{k}={v}" for k, v in reading.items()))
+    logger.info("Recorded reading%s: %s",
+                f" backfilled from {age:.0f}s ago" if age else "",
+                ", ".join(f"{k}={v}" for k, v in reading.items()))
     _prune_if_due()
     return jsonify({
         'success': True,
         'recorded_at': datetime.fromtimestamp(recorded_at).isoformat(),
+        'backfilled': bool(age),
         'fields': sorted(reading),
     })
 

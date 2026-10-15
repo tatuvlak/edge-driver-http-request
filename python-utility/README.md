@@ -25,6 +25,36 @@ Neither job calls the SmartThings API.
 `/oauth/*` routes also survive from the old external-callback design and are
 not part of the current flow.
 
+### What `/ingest` accepts
+
+Every measurement is optional — the pressure sensor may be absent and a PMS
+read can fail on any cycle — but anything present must be a number in a
+plausible range, and a body with no measurement at all is rejected.
+
+| Field | Meaning |
+|---|---|
+| `temperature_c`, `humidity_pct`, `pressure_hpa` | BME280 |
+| `pm1`, `pm25`, `pm10` | PMS5003 |
+| `aqi` | Matter's AirQualityEnum, 0-6 |
+| `age_s` | How long ago this reading was **taken**, in seconds. Absent or 0 means now. |
+| `pms_hold_ok` | Whether the station's PMS reset line held the module off through the last sleep. Absent means it has not checked yet. |
+
+`age_s` exists because the station holds readings it could not send while this
+service was down — it keeps an hour of them in RTC memory — and drains them
+once this answers again. It has no clock of its own (it never asks an NTP
+server), so it reports each reading's age and the hub does the subtraction.
+A backfilled reading is filed under the time it was measured, so it lands in
+the history where it belongs rather than bunched up at the moment the NAS came
+back. It also cannot displace the newest reading on the displays, since
+`/api/weather` orders by recorded time.
+
+`pms_hold_ok` is not a measurement. The station is mounted outside with only a
+power lead, and nothing reads its serial console, so this is the only channel
+it has for reporting a fault that the readings themselves cannot show. A loose
+reset wire leaves the sensor's fan running continuously — about 100mA and the
+fan's rated life, spent for nothing — and is otherwise audible only to someone
+standing next to it. `false` surfaces as a notice on the TV dashboard.
+
 Send a token as `Authorization: Bearer <token>` or `X-Auth-Token: <token>`.
 **An unset token leaves that endpoint open** — deliberate, so the Edge driver
 keeps working while `ACTION_TOKEN` is empty, but it means an empty
