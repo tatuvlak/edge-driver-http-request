@@ -18,7 +18,7 @@ import hmac
 import logging
 import time
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
 
@@ -272,7 +272,7 @@ class SmartThingsAPI:
                 'refresh_token': self.refresh_token,
                 'expires_at': self.token_expires_at,
                 'created_at': self._token_created_at,
-                'updated_at': datetime.now().isoformat()
+                'updated_at': _iso()
             }
             
             with open(token_file, 'w') as f:
@@ -495,7 +495,7 @@ def health_check():
 
     return jsonify({
         'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
+        'timestamp': _iso(),
         'version': '3.1.0',
         'launch_method': 'local REST (no SmartThings)',
         'weather': weather,
@@ -654,7 +654,7 @@ def oauth_token_exchange():
             'success': True,
             'message': 'OAuth authorization successful! Tokens saved.',
             'expires_in': expires_in,
-            'expires_at': datetime.fromtimestamp(st_api.token_expires_at).isoformat()
+            'expires_at': _iso(st_api.token_expires_at)
         })
         
     except Exception as e:
@@ -722,7 +722,7 @@ def launch_tv_app():
         payload = {
             'success': success,
             'device': display.name,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': _iso(),
             'details': details,
         }
 
@@ -757,6 +757,27 @@ def _prune_if_due():
     except Exception:
         # Never fail an ingest over housekeeping; the reading is the point.
         logger.exception("Pruning old readings failed")
+
+
+def _iso(ts: float | None = None) -> str:
+    """A timestamp the other end cannot misread.
+
+    `datetime.fromtimestamp(ts).isoformat()` produces a NAIVE string - no
+    offset, no Z - rendered in whatever zone the container happens to be set
+    to. This one runs in UTC, so every reading went out stamped in UTC with
+    nothing to say so, and the TV app's `new Date(...)` dutifully read it as
+    local time. The clock on the dashboard was therefore wrong by exactly the
+    viewer's UTC offset: two hours, in Poland, all summer.
+
+    Nothing else gave it away. age_seconds and `stale` are computed from epoch
+    arithmetic and were always right, so the staleness logic behaved perfectly
+    while the displayed time was two hours out - which is why this survived
+    weeks of looking at the thing every day.
+
+    Always timezone-aware. A client converts it to wherever it is.
+    """
+    moment = datetime.now(timezone.utc) if ts is None else datetime.fromtimestamp(ts, timezone.utc)
+    return moment.isoformat()
 
 
 @app.route('/ingest', methods=['POST'])
@@ -797,7 +818,7 @@ def ingest_reading():
     _prune_if_due()
     return jsonify({
         'success': True,
-        'recorded_at': datetime.fromtimestamp(recorded_at).isoformat(),
+        'recorded_at': _iso(recorded_at),
         'backfilled': bool(age),
         'fields': sorted(reading),
     })
@@ -808,7 +829,7 @@ def _serve_reading(row):
     recorded_at = row.pop('recorded_at')
     age = max(0.0, time.time() - recorded_at)
     payload = {k: v for k, v in row.items() if v is not None}
-    payload['recorded_at'] = datetime.fromtimestamp(recorded_at).isoformat()
+    payload['recorded_at'] = _iso(recorded_at)
     payload['age_seconds'] = round(age, 1)
     # The displays need to be able to tell "this is now" from "this is whatever
     # the sensor last managed to send", rather than rendering both identically.
@@ -857,7 +878,7 @@ def api_weather_history():
         'count': len(rows),
         'readings': [
             {**{k: v for k, v in r.items() if k != 'recorded_at' and v is not None},
-             'recorded_at': datetime.fromtimestamp(r['recorded_at']).isoformat()}
+             'recorded_at': _iso(r['recorded_at'])}
             for r in rows
         ],
     })
