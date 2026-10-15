@@ -87,10 +87,29 @@ def init(db_path: str) -> None:
         for name, decl in _SCHEMA.items():
             if name in have:
                 continue
-            # NOT NULL cannot be added to a populated table without a default,
-            # and recorded_at is in the original schema anyway.
-            conn.execute(f"ALTER TABLE readings ADD COLUMN {name} {decl.replace(' NOT NULL', '')}")
-            logger.info("Added column %s to readings", name)
+            try:
+                # NOT NULL cannot be added to a populated table without a
+                # default, and recorded_at is in the original schema anyway.
+                conn.execute(
+                    f"ALTER TABLE readings ADD COLUMN {name} {decl.replace(' NOT NULL', '')}")
+                logger.info("Added column %s to readings", name)
+            except sqlite3.OperationalError as err:
+                # gunicorn runs several workers and every one of them imports
+                # app.py, which calls this. So two workers can read the same
+                # PRAGMA, both conclude the column is missing, and both try to
+                # add it. The loser gets "duplicate column name".
+                #
+                # That is not a failure: the column exists, which is the whole
+                # point of the statement. Anything else is a real error and
+                # still raises.
+                #
+                # Caught per column rather than around the loop so that losing
+                # one race does not skip the remaining columns - or the index
+                # below, which is how the first version of this left a fresh
+                # database unindexed.
+                if "duplicate column name" not in str(err).lower():
+                    raise
+                logger.info("Column %s was added by another worker", name)
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_recorded_at ON readings(recorded_at)")
     logger.info("Weather store ready at %s", db_path)
