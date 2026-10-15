@@ -94,7 +94,12 @@ documented in that file; the ones that bite:
 
 Deployment is in
 [`../DEPLOYMENT_QNAP_CONTAINER_STATION.md`](../DEPLOYMENT_QNAP_CONTAINER_STATION.md);
-`docker-compose.no-api.yml` is the current compose file.
+`docker-compose.no-api.yml` is the current compose file, and
+`/share/Container/tv-app-launcher-no-api` is the live folder on the NAS.
+`docker-compose.yml` and `/share/Container/tv-app-launcher` are the stopped
+SmartThings-API deployment, kept as a rollback - updating that one by mistake
+leaves the live service running old code with nothing to show for it. See
+`../DEPLOYMENT_QNAP_CONTAINER_STATION.md`.
 
 Note that it has **no `environment:` block**, on purpose. Container Station
 resolves an application's compose file in a temporary directory where the

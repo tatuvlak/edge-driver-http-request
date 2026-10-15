@@ -4,11 +4,80 @@ Since `docker-compose` isn't available on your NAS, use Container Station's buil
 
 ---
 
+# Which deployment is live
+
+**There are two folders on the NAS, and only one of them matters.**
+
+| Folder | Compose file | What it is |
+|---|---|---|
+| `/Container/tv-app-launcher-no-api` | `docker-compose.no-api.yml` | **The live service.** Local control, weather hub. |
+| `/Container/tv-app-launcher` | `docker-compose.yml` | The original SmartThings-API version. Stopped, kept as a rollback. |
+
+This page used to name `tv-app-launcher` throughout, because it was written
+before the second deployment existed. Following it put an update into the
+stopped folder: the files landed, the rebuild succeeded, and the live service
+went on running the old code with nothing to show anything had gone wrong.
+
+**Confirm it from the filesystem rather than from this page.** The sensor posts
+every few minutes, so the live database is the one that was written seconds
+ago:
+
+- `/Container/tv-app-launcher-no-api/data/weather.db`
+- `/Container/tv-app-launcher/data/weather.db`
+
+Compare their modification times in File Station. Cross-check in Container
+Station -> Containers: one container is running and bound to host port 5000,
+and its name is the answer.
+
+Everything below says `tv-app-launcher-no-api`. If the check above disagrees,
+trust the check and fix this page.
+
+---
+
+# Updating an existing deployment
+
+Re-uploading the changed files is not enough, and neither is **Recreate** —
+that rebuilds the container from the image it already has. The image itself has
+to be rebuilt:
+
+1. **Back up the database.** File Station -> copy
+   `/Container/tv-app-launcher-no-api/data/weather.db` somewhere, dated.
+   `weather_store.init()` migrates the schema in place on start.
+2. **Upload the changed files** into `/Container/tv-app-launcher-no-api/`,
+   flat at the top level. The Dockerfile's `COPY` reads that directory, so a
+   file in a `python-utility/` subfolder is invisible to the build.
+3. **Applications -> `tv-app-launcher-no-api` -> Delete.** The data is on the
+   NAS, outside the container, and survives this.
+4. **Applications -> Create**, same name, paste the whole of
+   `python-utility/docker-compose.no-api.yml`. Check the pasted text says
+   `-no-api` in `build.context`, the volume and `env_file`.
+5. **Verify which code is running**, not just that it started:
+
+   ```powershell
+   curl.exe -s -H "Authorization: Bearer <READ_TOKEN>" "http://<nas>:5000/api/weather"
+   ```
+
+   `recorded_at` must carry a UTC offset - `2026-10-15T21:38:43+00:00`, not
+   `2026-10-15T21:38:43`. A bare timestamp means the build predates that fix
+   and the upload did not take effect.
+
+A migration logs its one line on the start that performs it and never again, so
+`Added column ... to readings` is a useful signal only on the first start after
+an upgrade. The offset check above stays true permanently, which is why it is
+the one to rely on.
+
+---
+
 # Rebuilding for the local-control version
 
-**Start here if you are updating an existing deployment.** This version launches
-the app over the LAN instead of the SmartThings cloud, and hosts the weather data
-the sensor pushes. Both change what the container needs.
+**The history of how the live deployment came to exist.** For updating it, use
+the section above. This version launches the app over the LAN instead of the
+SmartThings cloud, and hosts the weather data the sensor pushes. Both change
+what the container needs.
+
+> The paths below say `tv-app-launcher` because that was the only folder when
+> this was written. The live deployment is `tv-app-launcher-no-api`; substitute
+> it anywhere a path appears.
 
 Three things differ from the original setup below:
 
