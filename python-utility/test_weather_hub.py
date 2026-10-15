@@ -265,6 +265,55 @@ check("and a reading using the new column stores",
 weather_store.init(legacy)   # must be idempotent
 check("init is idempotent", weather_store.latest(legacy)["temperature_c"] == 20.5)
 
+# gunicorn runs the service with several workers and every one of them imports
+# app.py, which calls init(). They can therefore read the same PRAGMA, all
+# conclude a column is missing, and all try to add it - and all but one get
+# "duplicate column name". The first version of this migration did exactly
+# that in production: the column was added, a second worker raised, and the
+# traceback was swallowed by app.py's try/except, so the service came up
+# looking healthy with one worker having skipped the index creation below.
+import threading  # noqa: E402
+
+racy = str(Path(tempfile.mkdtemp()) / "racy.db")
+with sqlite3.connect(racy) as conn:
+    conn.execute("CREATE TABLE readings (recorded_at REAL NOT NULL, temperature_c REAL)")
+    conn.execute("INSERT INTO readings (recorded_at, temperature_c) VALUES (?, ?)",
+                 (time.time(), 18.0))
+
+WORKERS = 4
+ready = threading.Barrier(WORKERS)
+errors: list[BaseException] = []
+
+
+def migrate():
+    ready.wait()          # start them together, to make the race likely
+    try:
+        weather_store.init(racy)
+    except BaseException as exc:       # noqa: BLE001 - the point is to catch any
+        errors.append(exc)
+
+
+threads = [threading.Thread(target=migrate) for _ in range(WORKERS)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+
+check(f"{WORKERS} workers migrating at once, none raised", not errors,
+      "; ".join(f"{type(e).__name__}: {e}" for e in errors))
+
+with sqlite3.connect(racy) as conn:
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(readings)")]
+    idx = [row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='readings'")]
+check("every column present exactly once", len(cols) == len(set(cols)) == len(weather_store._SCHEMA),
+      cols)
+# The loser of the race must still reach the index, which is what the
+# per-column catch is for.
+check("the index was created", "idx_recorded_at" in idx, idx)
+check("the existing reading survived the scramble",
+      weather_store.latest(racy)["temperature_c"] == 18.0)
+
 # --------------------------------------------------------------------------
 section("timestamps carry their offset")
 # A naive ISO string - no offset, no Z - is rendered in whatever zone the
