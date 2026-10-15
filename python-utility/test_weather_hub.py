@@ -168,5 +168,102 @@ flaskapp.config.INGEST_TOKEN = "ingest-secret"
 body = c.get("/health").get_json()
 check("health reports data is flowing", body["weather"]["has_readings"] is True, body["weather"])
 
+# --------------------------------------------------------------------------
+section("the PMS hold flag")
+# Not a measurement: the station's report on whether its reset line actually
+# held the sensor off through the last sleep. It has no other way to tell us —
+# it is mounted outside with a power lead and nothing reads its serial console.
+for label, value, want in [
+    ("true becomes 1", True, 1),
+    ("false becomes 0", False, 0),
+    ("1 is accepted", 1, 1),
+    ("0 is accepted", 0, 0),
+]:
+    got = weather_store.validate({"temperature_c": 5.0, "pms_hold_ok": value})
+    check(label, got.get("pms_hold_ok") == want, got)
+
+check("absent means not checked, so nothing is stored",
+      "pms_hold_ok" not in weather_store.validate({"temperature_c": 5.0}))
+check("null means not checked either",
+      "pms_hold_ok" not in weather_store.validate({"temperature_c": 5.0, "pms_hold_ok": None}))
+for bad in ("yes", 2, -1, 0.5):
+    try:
+        weather_store.validate({"temperature_c": 5.0, "pms_hold_ok": bad})
+        check(f"rejects pms_hold_ok={bad!r}", False)
+    except weather_store.ValidationError:
+        check(f"rejects pms_hold_ok={bad!r}", True)
+
+# A flag on its own is not a reading. Storing it would push a real reading out
+# of 'latest' and show the displays a row with no numbers in it.
+try:
+    weather_store.validate({"pms_hold_ok": False})
+    check("a flag with no reading is rejected", False)
+except weather_store.ValidationError as err:
+    check("a flag with no reading is rejected", True, err)
+
+# --------------------------------------------------------------------------
+section("backfilled readings")
+check("no age_s means now", weather_store.backfill_age({"temperature_c": 1.0}) == 0.0)
+check("null age_s means now", weather_store.backfill_age({"age_s": None}) == 0.0)
+check("an age comes back as seconds", weather_store.backfill_age({"age_s": 900}) == 900.0)
+for bad in ("soon", -1, weather_store.MAX_BACKFILL_AGE + 1, float("nan"), True):
+    try:
+        weather_store.backfill_age({"age_s": bad})
+        check(f"rejects age_s={bad!r}", False)
+    except weather_store.ValidationError:
+        check(f"rejects age_s={bad!r}", True)
+
+# The point of all this: a reading held through an outage must land in the
+# history at the time it was MEASURED, not the time the NAS came back.
+backfill_db = str(Path(tempfile.mkdtemp()) / "backfill.db")
+weather_store.init(backfill_db)
+r = c.post("/ingest", json={**GOOD, "temperature_c": 11.0}, headers=ING)
+flaskapp.config.WEATHER_DB_PATH = backfill_db
+now = time.time()
+c.post("/ingest", json={**GOOD, "temperature_c": 1.0}, headers=ING)
+r = c.post("/ingest", json={**GOOD, "temperature_c": 2.0, "age_s": 1800}, headers=ING)
+check("a backfilled push is accepted", r.status_code == 200, r.get_json())
+check("and says so", r.get_json().get("backfilled") is True, r.get_json())
+
+rows = weather_store.history(backfill_db, hours=24)
+by_temp = {row["temperature_c"]: row["recorded_at"] for row in rows}
+check("both rows stored", sorted(by_temp) == [1.0, 2.0], sorted(by_temp))
+check("the backfilled row is filed half an hour back",
+      1750 < now - by_temp[2.0] < 1850, round(now - by_temp[2.0]))
+check("the fresh row is filed now", abs(now - by_temp[1.0]) < 10, round(now - by_temp[1.0]))
+# Backfill must never displace the newest reading on the displays.
+check("latest is still the fresh one",
+      weather_store.latest(backfill_db)["temperature_c"] == 1.0,
+      weather_store.latest(backfill_db)["temperature_c"])
+
+# --------------------------------------------------------------------------
+section("migrating a database that predates these columns")
+# There is a live database with weeks of readings in it. CREATE TABLE IF NOT
+# EXISTS does nothing to a table that already exists, so without a migration
+# every insert naming a new column would fail and the sensor would go quiet.
+import sqlite3  # noqa: E402
+
+legacy = str(Path(tempfile.mkdtemp()) / "legacy.db")
+with sqlite3.connect(legacy) as conn:
+    conn.execute(
+        """CREATE TABLE readings (recorded_at REAL NOT NULL, temperature_c REAL,
+           humidity_pct REAL, pressure_hpa REAL, pm1 REAL, pm25 REAL, pm10 REAL,
+           aqi INTEGER)"""
+    )
+    conn.execute("INSERT INTO readings (recorded_at, temperature_c) VALUES (?, ?)",
+                 (time.time() - 60, 19.5))
+
+weather_store.init(legacy)
+cols = {row[1] for row in sqlite3.connect(legacy).execute("PRAGMA table_info(readings)")}
+check("the new column was added", "pms_hold_ok" in cols, sorted(cols))
+check("the existing reading survived",
+      weather_store.latest(legacy)["temperature_c"] == 19.5)
+weather_store.record(legacy, weather_store.validate({"temperature_c": 20.5, "pms_hold_ok": False}))
+check("and a reading using the new column stores",
+      weather_store.latest(legacy)["pms_hold_ok"] == 0,
+      weather_store.latest(legacy)["pms_hold_ok"])
+weather_store.init(legacy)   # must be idempotent
+check("init is idempotent", weather_store.latest(legacy)["temperature_c"] == 20.5)
+
 print("\n" + ("FAILURES: " + ", ".join(failures) if failures else "all checks passed"))
 sys.exit(1 if failures else 0)
